@@ -54,7 +54,7 @@ def ear():
             tell("I cant understand please tell again")
 
 def listen():
-     with sr.Microphone() as source2:
+    with sr.Microphone() as source2:
                 r = sr.Recognizer()
                 r.adjust_for_ambient_noise(source2, duration=0.3)
                 r.pause_threshold = 1
@@ -269,11 +269,11 @@ try:
                                 print(Fore.RED + "whatsapp is open now")
                                 time.sleep(5)
 
-                            # pause a program
-                            if "pause" in mytext or "wait" in mytext or "sleep" in mytext:
-                                tell('ok ,i am shutting down')
-                                print(Fore.LIGHTGREEN_EX + 'ok ,i am shutting down')
-                                break
+                            # # pause a program
+                            # if "pause" in mytext or "wait" in mytext or "sleep" in mytext:
+                            #     tell('ok ,i am shutting down')
+                            #     print(Fore.LIGHTGREEN_EX + 'ok ,i am shutting down')
+                            #     break
 
                             # open  a browser
                             if "browser" in mytext or "firefox" in mytext:
