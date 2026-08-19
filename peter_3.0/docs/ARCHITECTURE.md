@@ -67,8 +67,11 @@ flowchart TB
     P --> L[Multi-LLM Brain]
     L --> L1["3 providers: Claude, GPT, Gemini"]
     L --> L2[Switch by voice mid-conversation]
-    L --> L3[Live running-cost meter, per session]
+    L --> L3["Live running-cost meter, per session — shown in ₹"]
     L --> L4[Per-provider model choice, editable in config.yml]
+    L --> L5["Gemini: smart per-turn routing between a cheap\nand a strong model, based on the turn's own text"]
+    L --> L6["Gemini: same-tier fallback on a rate limit / 503,\nno added delay, sticky for the rest of the session"]
+    L --> L7["Retry with exponential backoff on any\nrecoverable error, announced as it happens"]
 
     P --> G["Safety & Governance"]
     G --> G1["Every action tiered: read / write / spend"]
@@ -93,8 +96,8 @@ flowchart TB
 | **Email** | "Any unread mail from my professor" | Reads over IMAP with an app password — no Google Cloud project, no OAuth, no weekly re-authorization. |
 | **Calendar** | "What's on my calendar tomorrow" | Talks to Google Calendar/Tasks via a narrow OAuth client (sensitive, not restricted, scope — see §2.7). |
 | **Browser** | "Check the price of this laptop on Flipkart" | No official API exists for that site (see README for the full API survey), so Peter drives a real, logged-in Playwright browser instead. It reads the page's own structured product data first (JSON-LD/OpenGraph — what Google Shopping reads), falling back to a screenshot only if that's absent. |
-| **Multi-LLM** | "Switch to Gemini" | The whole conversation's tool-calling loop is vendor-neutral, so switching providers mid-session works without rewriting history — see §2.4. |
-| **Safety** | "Delete this file" → Peter asks first | Every one of the 72 registered tools carries a permission tier baked in at registration. `spend`-class actions (anything that pays money) are not merely "asked about" — the code path to auto-execute them does not exist. |
+| **Multi-LLM** | "Switch to Gemini" | The whole conversation's tool-calling loop is vendor-neutral, so switching providers mid-session works without rewriting history — see §2.2.2. When Gemini is set to `auto` (this deployment's default), each turn's own text picks a cheap or a strong model with no extra API call — see §2.2.4. |
+| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 72 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
 | **Proactive** | (nothing — that's the point) | "Team meeting in 10 minutes, with Priya and Arjun" fires on its own from a calendar poll. "3 of your 23 unread look like they need a reply" fires from a mail poll. Both are read-only nudges, never actions taken on your behalf — see §2.10. |
 
 ### 1.3 What is deliberately **not** built yet
@@ -329,6 +332,80 @@ bill. That's why `Brain._build_user_content()` puts `<now>...</now>` and the
 memory block in the *user* turn instead, keeping the system prompt frozen so
 `usage.cache_read` stays non-zero from the second turn onward.
 
+#### 2.2.4 Gemini: smart routing, same-tier fallback, and explicit caching — `peter/llm/router.py`, `peter/llm/providers/gemini_provider.py`, `peter/core/retry.py`
+
+**Job:** when `agent.models.gemini` is set to `auto`, spend the strong model's
+money only on turns that actually need it, survive Gemini being briefly
+overloaded without adding real delay, and never let either of those things
+quietly break prompt caching.
+
+```mermaid
+flowchart TD
+    Turn["Turn text (after <now>/<memory> tags stripped)"] --> Router["router.classify()\nfree, instant, no extra API call"]
+    Router -->|"list/reminder bookkeeping\n('add milk to my todo list')"| Light1[light_model]
+    Router -->|"high-stakes action word\n(delete, buy, run command...)"| Heavy1[heavy_model]
+    Router -->|"reasoning/complexity keyword\n(compare, debug, step-by-step...)"| Heavy2[heavy_model]
+    Router -->|"longer than heavy_word_threshold"| Heavy3[heavy_model]
+    Router -->|"otherwise: routine, short"| Light2[light_model]
+
+    Light1 & Light2 --> Base["base model for this turn"]
+    Heavy1 & Heavy2 & Heavy3 --> Base
+
+    Base --> Candidates["candidates = [base] + gemini_fallbacks[base]\nrotated to start at whichever last worked"]
+    Candidates --> Try1["try model 1"]
+    Try1 -->|"recoverable error\n(429 / 5xx / network)"| Try2["try model 2 — no delay"]
+    Try1 -->|ok| Done
+    Try2 -->|ok| Done["record _last_good[base] = this model\ncache tier decided by BASE, not the model\nthat actually answered"]
+    Try2 -->|"still failing after all candidates"| Backoff["call_with_retry():\nexponential backoff + jitter,\nannounced each attempt, voice + CLI"]
+    Backoff -->|exhausted| RealError[surface the real error]
+```
+
+- **The router is a free heuristic, not an LLM call.** `classify()` runs a
+  handful of regexes against the turn's own text — checked in a specific
+  order, because order is where this went wrong twice in testing: bare
+  words like "why" or "explain" matched so much ordinary conversation that
+  *most* turns escalated to the expensive model, which is the opposite of
+  the goal; then "add buy milk to my todo list" escalated because "buy"
+  appeared inside the todo item's own text. The fix was checking list/
+  reminder bookkeeping **first** (an unconditional escape to the cheap
+  tier) and requiring genuine complexity phrases rather than single common
+  words for everything after it.
+- **Same-tier fallback is a fast hedge, not the backoff.** `gemini_fallbacks`
+  in config.yml maps a model to same-*price* substitutes
+  (`gemini-3.7-flash → gemini-3.6-flash → gemini-3.5-flash`), tried
+  immediately with zero delay between them — this is what covers "one
+  specific model is briefly overloaded." The exponential backoff below it
+  only engages once every candidate in that list has also failed, which
+  means the whole deployment (not just one model) is actually down.
+- **Fallback is sticky.** `_last_good[base]` remembers which candidate
+  worked last, so once a session has fallen over to `gemini-3.6-flash` it
+  starts there next turn instead of re-probing the dead primary every
+  single time — cheap to check, and it's what keeps "no added delay" true
+  across a whole session, not just the first retry.
+- **Caching has to key off the *routed tier*, not the model that actually
+  answered — this was a real bug, found by testing the fallback live.**
+  `_should_cache()` originally compared `self.model` to `auto_light_model`
+  literally; once a session fell back to `gemini-3.6-flash`, that
+  comparison went permanently false and silently disabled caching — and
+  its ~90% saving — for the rest of the session, even though 3.6-flash is
+  the same price tier and equally cacheable. Fixed by tracking
+  `self._current_base` (the tier the router picked, set once per turn
+  before any fallback rotation) and comparing *that* instead.
+- **The heavy tier is never cached.** Caching only applies to the light
+  model — the heavy model is used rarely enough per session that paying to
+  *create* a cache for it would cost more than it saves.
+- **Retry announces itself, in both voice and text.** `call_with_retry()`
+  (used for the outer backoff, and by anything else in the codebase that
+  needs the same shape) takes an `on_retry` callback; `Brain._on_retry`
+  speaks "Gemini isn't responding (attempt 2 of 5). Retrying in 20
+  seconds..." through `services().say()` — so a real outage is narrated,
+  not silent, in whichever mode you're in.
+- **Cost displays in ₹, not $.** Every vendor bills in USD; `Usage.summary()`
+  converts using `agent.usd_to_inr_rate` (a manually maintained rate, no
+  live FX feed) only at display time — the underlying `cost_usd` totals stay
+  in USD, since that's what every pricing table in `pricing.py` is
+  denominated in.
+
 ---
 
 ### 2.3 Tool Registry — `peter/agent/registry.py` + `peter/tools/`
@@ -386,29 +463,44 @@ Nothing calls a tool directly.
 
 ```mermaid
 flowchart TD
-    Call["Tool call from the agent loop"] --> Tier{Tool's tier?}
-    Tier -->|read| Allow[Execute immediately]
-    Tier -->|write| Ask["Ask the human\n(spoken yes/no, or tray toast)"]
-    Tier -->|spend| Handoff["Never auto-execute.\nReturn a hand-off message:\nwhat's ready + what to tap"]
+    Call["Tool call from the agent loop"] --> Override{"policy.standing_rules\nnames this exact tool?"}
+    Override -->|"yes, e.g. delete_file -> confirm"| Decision["Use the override decision"]
+    Override -->|"no override"| Tier{"Tool's tier default"}
+    Tier -->|"read -> allow"| Decision
+    Tier -->|"write -> allow"| Decision
+    Tier -->|"spend -> handoff"| Decision
 
-    Ask -->|yes / within timeout| Allow
-    Ask -->|no / timeout / declined| Decline["Return 'user declined' as a\nnormal tool RESULT, not an exception"]
+    Decision -->|allow| Run
+    Decision -->|confirm| Ask["Ask the human\n(spoken yes/no, or tray toast)"]
+    Decision -->|handoff| Handoff["Never auto-execute.\nReturn a hand-off message:\nwhat's ready + what to tap"]
 
-    Allow --> Run[Tool body runs]
+    Ask -->|"yes / within timeout"| Run[Tool body runs]
+    Ask -->|"no / timeout / declined"| Decline["Return 'user declined' as a\nnormal tool RESULT, not an exception"]
+
+    Run --> Log
     Handoff --> Log
-    Decline --> Log
-    Run --> Log[Audit log: one JSON line\ntimestamp · tool · args · tier · decision · result]
+    Decline --> Log[Audit log: one JSON line\ntimestamp · tool · args · tier · decision · result]
 ```
 
+- **`write` defaults to `allow`, not `confirm`.** Early on, every write-tier
+  tool prompted — opening an app, playing a video, adding a calendar event,
+  all needed a spoken yes/no. In practice this trained the habit of
+  reflexively saying "yes" to everything, which defeats the point of
+  asking. The tier default flipped to `allow`; only tools in
+  `policy.standing_rules` that are genuinely destructive or hard to
+  reverse — `delete_file`, `delete_email`, `delete_calendar_event`,
+  `run_powershell`, `lock_workstation`, `send_email` — are pulled back to
+  `confirm`. `spend` still always hands off and never even reaches a
+  prompt.
+- **Per-tool overrides beat the tier default in *either* direction** —
+  `standing_rules` can loosen a tool (`set_reminder: allow` even though
+  reminders aren't literally read-tier) or tighten one (the destructive list
+  above), all from `config.yml` with no code change.
 - **A decline is a tool *result*, not a raised exception.** If it raised,
   the whole turn would abort and the user would hear nothing but a
   generic error. Returning it as text means the model sees "the user
   declined" and can react naturally — apologize, offer an alternative, ask
   what to do instead.
-- **Per-tool overrides beat the tier default.** `config.yml`'s
-  `policy.standing_rules` can tighten or loosen a *specific* tool without
-  touching code — e.g. `delete_file` can be forced to always confirm even
-  though it's already `write`-tier by default.
 - **Fails closed.** The default confirmer when nothing else is wired up
   (`AlwaysDeny`) refuses everything rather than allowing it. A Peter that's
   annoyingly cautious is a nuisance; one that silently allows destructive
@@ -572,6 +664,13 @@ Four decisions worth knowing:
   currently has media focus. Driving the YouTube page through Playwright would
   only work for YouTube, only in Peter's own browser instance, and would break
   whenever the markup changed.
+- **YouTube can open in a different browser than everything else.**
+  `desktop.youtube_browser` (e.g. Brave) overrides `preferred_browser`
+  (e.g. Firefox) specifically for `youtube.com`/`youtu.be` URLs — checked
+  once, in `_open_with_preferred()`, so it applies uniformly whether the
+  video came from `play_youtube`, `open_named_site("youtube")`, or a
+  YouTube bookmark. Left blank, there is no override and everything shares
+  one browser as before.
 
 YouTube search deserves its own note: the top result is found by fetching the
 search page and reading the `"videoId"` fields out of the JSON embedded in its
@@ -684,6 +783,71 @@ flowchart TD
 
 ---
 
+### 2.9b CLI status line — `peter/ui/progress.py`
+
+**Job:** in `--text` mode, show *exactly* what a turn is doing at every
+moment — not just "Peter is thinking" for the whole turn regardless of
+whether it's calling zero tools or five — without any of that ever
+corrupting the confirm prompt or a log line sharing the same terminal.
+
+```mermaid
+flowchart TD
+    Loop["loop.run_turn()\non_progress(stage, tool_call)"] --> Reporter["ProgressReporter\n(one Status object, reused for the session)"]
+
+    Reporter -->|"stage: thinking"| S1["peterThink spinner (brain, breathing dots)\n'Peter is thinking...'"]
+    Reporter -->|"stage: continuing"| S2["aesthetic spinner (filling bar)\n'Peter is putting that together...'"]
+    Reporter -->|"stage: tool"| S3["peterTool spinner (turning gear)\ndescribe_tool(name, arguments)\ne.g. '🚀 Opening Notepad...'"]
+    Reporter -->|"Brain._on_retry"| S4["clock spinner\n'gemini isn't responding — retrying in 10s...'"]
+
+    subgraph Shared["One rich.console.Console, shared"]
+        S1
+        S2
+        S3
+        S4
+        RichHandler["logging.RichHandler\n(log lines: cache created, fallback fired...)"]
+        PrintSpeaker["PrintSpeaker.say()\nreply rendered in a bordered Panel"]
+        Confirm["ConsoleConfirmer.ask()\ny/N prompt, via reporter.suspend()"]
+    end
+```
+
+- **`describe_tool()` reads the tool call's actual arguments, not just its
+  name.** A curated map of ~70 tools each carry an emoji + template
+  (`open_app` → `"🚀 Opening {name}"`), filled in from the call's own
+  arguments — so the status line says *what* is being opened/sent/deleted,
+  not just that something is happening. Any tool not in the map still gets
+  a readable fallback (humanized snake_case), so a newly added tool never
+  breaks this.
+- **The branded spinners are registered into Rich's own spinner table**
+  (`rich.spinner.SPINNERS["peterThink"] = {...}`), not vendored — a plain
+  dict mutation at import time, keyed by frames of equal length so the
+  status line doesn't jitter sideways as it animates (a real failure mode
+  of naive emoji-cycling spinners).
+- **One Console, shared by the spinner, the logger, and replies — this was
+  a real, found-live bug, not a hypothetical.** `RichHandler` originally
+  opened its *own* `Console`; two independent writers issuing ANSI redraw
+  codes to the same terminal is exactly what produced garbled output like
+  `⢃⠨ 🧠 Peter is thinking...[18:09:25] INFO prompt cache created...` on one
+  line. `main()` now builds a single `Console` and threads it through
+  `configure_logging(console=...)` and `Peter(console=...)`, which is what
+  lets Rich suspend-and-redraw correctly around a log line instead of the
+  two colliding.
+- **Replies render in a bordered `Panel`, not a bare `print()`.** Fixes the
+  same class of problem from a different angle: a multi-fact answer ("CPU
+  is X, memory is Y, disk is Z...") used to print as one line mixed into
+  the log stream; a Panel visually separates it. Along the way this caught
+  a second, unrelated Rich landmine: `"[peter]"` looks exactly like markup
+  (a style tag named "peter"), so printing it unescaped silently vanished
+  instead of showing — worth knowing if any other literal-bracket text ever
+  needs to go through this console.
+- **The confirm prompt suspends the spinner for exactly its own duration**,
+  via an injectable `suspend()` context manager on `ConsoleConfirmer`
+  (`reporter.suspend`) — a spinner still animating while `input()` reads
+  stdin mangles both the `[y/N]` text and whatever gets typed in response.
+  Suspending only around the prompt, not the whole turn, means a turn with
+  several confirmations in a row still shows the spinner between them.
+
+---
+
 ### 2.10 Proactive features — `peter/meeting_prep.py`, `peter/inbox_digest.py`, `peter/focus.py`
 
 **Job:** speak up without being asked, without ever taking an action that
@@ -761,7 +925,9 @@ peter_3.0/
 │   │   ├── base.py              # vendor-neutral types
 │   │   ├── factory.py           # picks + builds the active provider
 │   │   ├── pricing.py           # $/Mtok table, cost estimation
+│   │   ├── router.py            # §2.2.4 light/heavy classification (Gemini auto)
 │   │   └── providers/           # §2.2.2 anthropic / openai / gemini
+│   │       └── gemini_provider.py  # §2.2.4 auto-routing, fallback, explicit cache
 │   ├── policy/
 │   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
 │   │   └── audit.py              # append-only JSONL trail
@@ -771,16 +937,28 @@ peter_3.0/
 │   ├── meeting_prep.py          # §2.10 calendar + memory nudge
 │   ├── inbox_digest.py          # §2.10 read-only "needs a reply" scan
 │   ├── focus.py                 # §2.10 mute / time-box / restore
+│   ├── ui/
+│   │   ├── progress.py           # §2.9b CLI status line, branded spinners
+│   │   ├── confirm.py            # voice-mode spoken yes/no confirmer
+│   │   └── tray.py               # pystray icon, mic-state, confirm toasts
 │   ├── integrations/
 │   │   ├── mail/                 # §2.7 IMAP/SMTP
 │   │   ├── google/               # §2.7 Calendar/Tasks OAuth
 │   │   ├── browser/              # §2.6 Playwright + purchase interlock
-│   │   └── desktop/volume.py     # §2.10 pycaw get/set, shared by focus mode
+│   │   └── desktop/              # §2.6b apps, bookmarks, YouTube, media, folders
+│   │       ├── browsers.py        # open_url + bookmark reading (Firefox/Chromium)
+│   │       ├── matching.py        # fuzzy rank() for "open the staging dashboard"
+│   │       ├── media.py           # real media-key events
+│   │       ├── places.py          # standard Windows folders + configured ones
+│   │       ├── youtube.py         # top-result search, no API key
+│   │       └── volume.py          # §2.10 pycaw get/set, shared by focus mode
 │   ├── voice/                   # §2.1 wake / stt / tts / audio
 │   └── core/
 │       ├── config.py             # config.yml + .env loader/validator
 │       ├── services.py           # the lazy ServiceContainer
 │       ├── errors.py             # PeterError hierarchy
-│       └── logging.py            # literal-value secret redaction
+│       ├── logging.py            # literal-value secret redaction, shared Console
+│       ├── retry.py              # §2.2.4 call_with_retry: backoff + jitter
+│       └── notify.py             # desktop toast, shared by reminders/proactive features
 └── tests/                     # one test file per subsystem above
 ```
