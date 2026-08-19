@@ -1,0 +1,70 @@
+# Peter 3.0 — dependencies
+# Python 3.11 recommended (best Windows wheel coverage for the audio stack).
+# After a successful install, freeze exact versions:
+#   .venv/Scripts/python.exe -m pip freeze > requirements.lock.txt
+
+# --- LLM providers ---
+# Anthropic is also the schema-derivation engine: its SDK infers JSON Schema
+# from a function signature and docstring, and the result is fed to all three
+# vendors. So it stays required even when running on GPT or Gemini.
+anthropic>=0.116.0
+openai>=2.0
+google-genai>=1.0
+
+# --- Config ---
+python-dotenv>=1.0.0
+pydantic>=2.7
+PyYAML>=6.0
+
+# --- Audio I/O ---
+sounddevice>=0.4.6
+numpy>=1.26,<3
+
+# --- Wake word ---
+openwakeword>=0.6.0
+onnxruntime>=1.17
+
+# --- Speech to text ---
+faster-whisper>=1.0.3
+
+# --- Text to speech ---
+# Primary: Piper (fully local). If the wheel refuses to build on Windows,
+# set voice.tts.engine to "edge" or "sapi" in config/config.yml — the swap is
+# a one-line config change, no code.
+piper-tts>=1.2.0
+edge-tts>=6.1.0
+pyttsx3>=2.90
+
+# --- Google Calendar + Tasks ---
+google-api-python-client>=2.100
+google-auth>=2.30
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2
+
+# --- Email (IMAP/SMTP are stdlib; this renders HTML bodies to speakable text) ---
+html2text>=2024.2.26
+
+# --- Browser automation (phase 3) ---
+# After installing, fetch the browser binary itself:
+#   .venv/Scripts/python.exe -m playwright install chromium
+playwright>=1.44
+
+# --- Scheduling / persistence ---
+APScheduler>=3.10,<4
+SQLAlchemy>=2.0
+
+# --- Windows system control ---
+psutil>=5.9
+pycaw>=20240210
+pywin32>=306; sys_platform == "win32"
+Pillow>=10.0
+
+# --- Tray UI + notifications ---
+pystray>=0.19
+plyer>=2.1
+
+# --- Logging / CLI ---
+rich>=13.7
+
+# --- Tests ---
+pytest>=8.0

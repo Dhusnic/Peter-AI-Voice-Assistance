@@ -1,0 +1,714 @@
+# Peter 3.0 — Features & Technical Architecture
+
+This document has two parts:
+
+1. **What Peter 3.0 can actually do** — the feature set, grouped by capability.
+2. **How it is built** — a detailed walkthrough of every subsystem ("agent" /
+   layer), with a Mermaid diagram and a plain-English explanation for each.
+
+If you only read one section, read Part 2 → *"One turn, end to end"* — it
+explains the single most important design decision in the codebase.
+
+---
+
+## Part 1 — Feature List
+
+### 1.1 Feature map
+
+```mermaid
+flowchart TB
+    P((Peter 3.0))
+
+    P --> V[Voice]
+    V --> V1["Wake word: 'Hey Peter'"]
+    V --> V2[Speech-to-text, local, offline]
+    V --> V3[Text-to-speech, sentence-streamed]
+    V --> V4[Barge-in: interrupt Peter mid-sentence]
+    V --> V5["--text mode: type instead of speak"]
+
+    P --> S[System Control]
+    S --> S1[Open apps / URLs]
+    S --> S2[Read, write, move, delete, search files]
+    S --> S3[Screenshot, clipboard, volume]
+    S --> S4[System stats: CPU / RAM / disk / battery]
+    S --> S5[Lock workstation]
+    S --> S6["Run PowerShell — the full-access escape hatch"]
+
+    P --> T[Time & Tasks]
+    T --> T1[Alarms, timers, reminders]
+    T --> T2[To-do list]
+    T --> T3[Survives restart — jobs persisted in SQLite]
+
+    P --> M[Memory]
+    M --> M1[Remembers facts you tell it]
+    M --> M2[Remembers your preferences]
+    M --> M3[Recalls them by keyword search, unprompted]
+    M --> M4[Keeps a rolling log of past conversations]
+
+    P --> E[Email]
+    E --> E1[Read / search / count unread]
+    E --> E2[Send]
+    E --> E3[Star, archive, delete, mark read]
+    E --> E4["No Google OAuth needed — plain IMAP/SMTP"]
+
+    P --> C[Calendar & Tasks]
+    C --> C1[Check today / upcoming events]
+    C --> C2[Create / delete events]
+    C --> C3[Google Tasks: list, add, complete]
+    C --> C4[Morning briefing: mail + calendar + reminders]
+
+    P --> B["Browser (sites with no API)"]
+    B --> B1[Read any product page: price, name, availability]
+    B --> B2[Click / type / fill forms on your behalf]
+    B --> B3[Log in once, session reused]
+    B --> B4["Hard-blocked from ever clicking 'Buy' / 'Pay'"]
+    B --> B5[Per-site rate limiting to avoid bans]
+
+    P --> L[Multi-LLM Brain]
+    L --> L1["3 providers: Claude, GPT, Gemini"]
+    L --> L2[Switch by voice mid-conversation]
+    L --> L3[Live running-cost meter, per session]
+    L --> L4[Per-provider model choice, editable in config.yml]
+
+    P --> G["Safety & Governance"]
+    G --> G1["Every action tiered: read / write / spend"]
+    G --> G2[Writes need a spoken or tray confirmation]
+    G --> G3[Spend never auto-executes — hands off to you]
+    G --> G4[Append-only audit log of every tool call]
+```
+
+### 1.2 What each area means in practice
+
+| Area | You can say... | What actually happens |
+|---|---|---|
+| **Voice** | "Hey Peter, what's the weather" | Wake word fires locally → speech is transcribed on-device (faster-whisper) → sent to the LLM → the reply is streamed to TTS sentence-by-sentence, so Peter starts talking before the full answer is even generated. |
+| **System control** | "Take a screenshot" / "Open Chrome" / "What's my CPU doing" | Runs directly against Windows via `psutil`, `pywin32`, `pycaw`. `run_powershell` is the deliberate escape hatch for anything not covered by a named tool — always confirmed, always logged. |
+| **Time & tasks** | "Remind me to stretch in 20 minutes" | Stored in a SQLite-backed APScheduler job. Survives a restart — kill the process, the reminder still fires later because the job lives on disk, not in memory. |
+| **Memory** | "My college is PSG Tech" ... weeks later ... "which college am I in" | Facts and preferences are stored in SQLite with an FTS5 full-text index. Every turn, Peter's memory layer searches your new message for keyword overlap against stored facts and quietly injects the relevant ones — you never have to ask it to "remember to check its memory." |
+| **Email** | "Any unread mail from my professor" | Reads over IMAP with an app password — no Google Cloud project, no OAuth, no weekly re-authorization. |
+| **Calendar** | "What's on my calendar tomorrow" | Talks to Google Calendar/Tasks via a narrow OAuth client (sensitive, not restricted, scope — see §2.7). |
+| **Browser** | "Check the price of this laptop on Flipkart" | No official API exists for that site (see README for the full API survey), so Peter drives a real, logged-in Playwright browser instead. It reads the page's own structured product data first (JSON-LD/OpenGraph — what Google Shopping reads), falling back to a screenshot only if that's absent. |
+| **Multi-LLM** | "Switch to Gemini" | The whole conversation's tool-calling loop is vendor-neutral, so switching providers mid-session works without rewriting history — see §2.4. |
+| **Safety** | "Delete this file" → Peter asks first | Every one of the 60 registered tools carries a permission tier baked in at registration. `spend`-class actions (anything that pays money) are not merely "asked about" — the code path to auto-execute them does not exist. |
+
+### 1.3 What is deliberately **not** built yet
+
+Being explicit about the boundary matters as much as the feature list:
+
+- **No autonomous purchase completion.** Peter can fill a cart and reach the payment screen; RBI's mandatory two-factor authentication rules (from 1 April 2026) mean the OTP/UPI PIN step is legally yours, not automatable, so the code has no path that attempts it.
+- **No live transport/seat-availability watchers yet** (Phase 4 — polling jobs for price/seat drops). The browser layer that would power them already exists.
+- **No SMS / phone bridge** (Phase 6 — would need an Android companion app or ADB bridge; Windows has no API into your phone's messages).
+- **No subagent fan-out** (Phase 7 — e.g. "check this product across 5 sites at once" in parallel). The current design is deliberately a single agent loop with ~60 tools, which is simpler to debug and sufficient for now.
+
+---
+
+## Part 2 — Technical Architecture
+
+### 2.0 System overview
+
+Peter is six layers, each independently testable. A voice turn flows straight
+down through all of them and back up:
+
+```mermaid
+flowchart TD
+    subgraph Voice["1 · Voice I/O  (peter/voice/)"]
+        direction LR
+        Mic[Microphone ring buffer] --> Wake[openWakeWord] --> STT[faster-whisper] 
+        TTS[Piper / edge-tts, sentence-streamed] 
+    end
+
+    subgraph Agent["2 · Agent Core  (peter/agent/, peter/llm/)"]
+        direction LR
+        Brain[Brain] --> Loop[shared tool-call loop] --> Provider[LLMProvider: Anthropic / OpenAI / Gemini]
+    end
+
+    subgraph Gate["3 · Policy Gate  (peter/policy/)"]
+        direction LR
+        Classify[tier: read / write / spend] --> Decide[allow / confirm / handoff / deny] --> Audit[audit.jsonl]
+    end
+
+    subgraph Registry["4 · Tool Registry  (peter/tools/)"]
+        direction LR
+        T1[system] & T2[time] & T3[memory] & T4[mail] & T5[calendar] & T6[browser] & T7[llm]
+    end
+
+    subgraph Services["5 · Services & Integrations  (peter/core/services.py, peter/integrations/)"]
+        direction LR
+        Sched[APScheduler] & Mail[IMAP/SMTP] & Google[Calendar/Tasks OAuth] & Browse[Playwright]
+    end
+
+    subgraph Memory["6 · Memory  (peter/memory/)"]
+        direction LR
+        DB[(SQLite + FTS5\nfacts · preferences · episodes · todos)]
+    end
+
+    Mic --> Wake --> STT -->|text| Brain
+    Brain -->|speak| TTS
+    Loop -->|tool call| Gate
+    Gate -->|approved| Registry
+    Registry --> Services
+    Registry --> Memory
+    Brain -.->|inject relevant facts\ninto the user turn| Memory
+```
+
+**Why this shape, not a "fleet of agents":** a single LLM loop with a large,
+well-described tool registry outperforms a hand-wired multi-agent mesh for
+this workload, and is far easier to debug and audit. Each layer below is
+independently unit-tested; the plan explicitly reserves real subagents for
+later, for genuinely parallel work (e.g. reading five product pages at once)
+where a single context window would get flooded.
+
+---
+
+### 2.1 Voice I/O — `peter/voice/`
+
+**Job:** turn "someone is talking near the mic" into text, and turn Peter's
+reply back into audio, without ever blocking on network for the listening
+part.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Listening: wake word detected
+    Listening --> Thinking: VAD detects end of speech
+    Thinking --> Speaking: Brain.ask() returns text
+    Speaking --> Idle: TTS queue drained
+    Speaking --> Listening: wake word fires again (barge-in)\nTTS is stopped immediately
+    Listening --> Idle: silence / no speech heard
+```
+
+- **Wake word** (`wake.py`): `openWakeWord` running on `onnxruntime`, fully
+  local. No audio leaves the machine until "Hey Peter" is detected — this is
+  a hard privacy property, not a performance optimization, and is worth
+  keeping even if a cloud wake-word engine were faster.
+- **Speech-to-text** (`stt.py`): `faster-whisper`, endpointed by voice-activity
+  detection so Peter knows when you've *stopped* talking rather than waiting
+  for a fixed timeout.
+- **Text-to-speech** (`tts.py`): the reply is **streamed and split into
+  sentences** before being handed to the speech engine, so Peter starts
+  speaking the first sentence while later ones are still being synthesized —
+  this is what makes response latency feel like ~1s instead of "wait for the
+  whole paragraph."
+- **Barge-in**: `main.py`'s `_voice_tick()` checks the wake word *even while
+  Peter is speaking*; hearing it mid-sentence calls `speaker.stop()` and
+  immediately starts listening. An always-on assistant that can't be
+  interrupted is unusable.
+- **`--text` mode** exists specifically so every other layer can be developed
+  and tested without a microphone, wake-word model, or TTS engine in the
+  loop at all.
+
+---
+
+### 2.2 Agent Core — `peter/agent/brain.py` + `peter/llm/`
+
+**Job:** decide what to say and which tools to call, on whichever LLM vendor
+is currently active, without the rest of the codebase caring which vendor
+that is.
+
+#### 2.2.1 One turn, end to end
+
+This is the sequence that runs on *every single* thing you say to Peter —
+the most important diagram in this document:
+
+```mermaid
+sequenceDiagram
+    participant U as You
+    participant B as Brain.ask()
+    participant L as loop.run_turn()
+    participant P as LLMProvider (active vendor)
+    participant G as PolicyGate
+    participant R as Tool Registry
+    participant Svc as Services / Memory
+
+    U->>B: "remind me to call mom at 6"
+    B->>B: build user turn:\n<now>...</now> + relevant memory + your text
+    B->>L: run_turn(provider, tools, user_text, execute=Brain._execute)
+    L->>P: add_user(text); complete(tools)
+    P-->>L: response: tool_calls=[set_reminder(...)]
+    loop for each tool call
+        L->>B: execute(call)
+        B->>R: registry.get_record("set_reminder")
+        R->>G: gate.check(tool="set_reminder", tier="write")
+        G-->>U: "Set a reminder for 6pm to call mom — ok?"
+        U-->>G: yes
+        G->>Svc: scheduler.add_once(...)
+        Svc-->>G: job id
+        G-->>R: allowed, result
+        R-->>B: "Reminder set for 6:00 PM."
+        B-->>L: ToolResult(content="Reminder set for 6:00 PM.")
+    end
+    L->>P: add_tool_results([...]); complete(tools)
+    P-->>L: response: text="Done — I'll remind you at six."
+    L-->>B: TurnResult(text, tool_calls, stop_reason)
+    B-->>U: speaks the reply
+```
+
+Two details that are easy to miss and matter a lot:
+
+- **The tool loop can go around more than once.** A single user turn may
+  call several tools in sequence — check the calendar, *then* decide there's
+  a conflict, *then* ask for confirmation to move an event. `loop.run_turn`
+  caps this at `MAX_ITERATIONS = 12` so a confused model can't spend money
+  in a circle.
+- **`pause_turn` is a real stop reason, not an error.** Anthropic's
+  server-side tools (web search/fetch) can pause a turn mid-flight; the loop
+  detects `STOP_PAUSE` and re-sends to resume, up to
+  `agent.max_pause_restarts` times, instead of silently returning a
+  truncated answer.
+
+#### 2.2.2 Why there are three vendor SDKs behind one interface
+
+```mermaid
+flowchart LR
+    Brain --> Loop["peter/llm/loop.py\n(one implementation, vendor-neutral)"]
+    Loop --> Base["peter/llm/base.py\nToolSpec · ToolCall · ToolResult · Usage · ProviderResponse"]
+
+    Base --> AP["anthropic_provider.py"]
+    Base --> OP["openai_provider.py"]
+    Base --> GP["gemini_provider.py"]
+
+    AP --> ASDK["anthropic SDK\nmessages.create()"]
+    OP --> OSDK["openai SDK\nresponses.create()"]
+    GP --> GSDK["google-genai SDK\ngenerate_content()"]
+
+    ASDK -.->|"web_search / web_fetch\nserver tools"| Claude[(Claude)]
+    OSDK -.-> GPT[(GPT)]
+    GSDK -.-> Gemini[(Gemini)]
+
+    Factory["peter/llm/factory.py\nbuild_provider(config, system, name)"] -.builds.-> AP
+    Factory -.builds.-> OP
+    Factory -.builds.-> GP
+```
+
+- Every vendor SDK ships its **own** auto-executing tool runner
+  (`tool_runner` for Anthropic, implicit execution for OpenAI, `automatic_
+  function_calling` for Gemini). All three are deliberately **not used** —
+  each would run tool calls itself, bypassing the Policy Gate entirely. The
+  shared `loop.py` is the only thing allowed to decide when a tool actually
+  runs, and it always routes through `Brain._execute` → the registry → the
+  gate.
+- Each provider still has to translate the vendor's wire format into the
+  shared `ToolCall` / `ToolResult` / `Usage` shapes, and each vendor has its
+  own quirks the provider file absorbs so nothing above it has to know:
+  OpenAI sends tool arguments as a JSON *string* that must be parsed;
+  Gemini's function calls carry no call-id, so one is synthesized
+  (`gemini-{index}-{name}`); OpenAI folds cached tokens *inside*
+  `input_tokens` where Anthropic and Gemini report them separately, so
+  `_usage()` normalizes that before it reaches the shared `Usage` type.
+- **Switching provider keeps memory and cost, not conversation history.**
+  The three vendors' conversation formats are structurally incompatible
+  (Anthropic's content blocks vs. OpenAI's response items vs. Gemini's
+  `Content`/`Part` tree), so `Brain.switch_provider()` starts a fresh
+  provider-side history but carries the cumulative `Usage` total forward and
+  re-injects memory on the next turn — the point of switching is usually
+  "compare cost/quality," and that comparison needs the running total to
+  survive.
+
+#### 2.2.3 Prompt caching — why the system prompt is frozen
+
+```mermaid
+flowchart TD
+    Sys["System prompt\n(peter/agent/prompts.py)\nBYTE-IDENTICAL every turn"]
+    User["User turn\n<now>...timestamp...</now>\n+ relevant memory facts\n+ your actual words"]
+
+    Sys -->|cache_control: ephemeral, ttl configurable| Cache[("Provider-side\nprompt cache")]
+    Cache -->|cache hit on turns 2, 3, 4...| Cheap["~90% cheaper input tokens"]
+    User -->|never cached, changes every turn| Fresh[Sent fresh each time]
+```
+
+Prompt caching is a **prefix match**. The current time, today's date, or any
+per-turn ID *must never* appear in the system prompt — putting it there would
+silently invalidate the cache on every single turn and quietly multiply your
+bill. That's why `Brain._build_user_content()` puts `<now>...</now>` and the
+memory block in the *user* turn instead, keeping the system prompt frozen so
+`usage.cache_read` stays non-zero from the second turn onward.
+
+---
+
+### 2.3 Tool Registry — `peter/agent/registry.py` + `peter/tools/`
+
+**Job:** turn a plain Python function into something an LLM can discover,
+understand, and call — for all three vendors, from one definition.
+
+```mermaid
+flowchart LR
+    Fn["def set_reminder(text: str, at_iso: str) -> str:\n    '''docstring the model reads'''"]
+    Deco["@peter_tool(tier='write')"]
+    Fn --> Deco
+    Deco --> Wrapped["ToolRecord\n(sdk_tool, tier, name)"]
+    Wrapped --> Schema["ToolSpec\n(name, description, JSON-Schema parameters)\nvia Anthropic beta_tool inference"]
+    Schema --> A2[Anthropic tools=[...]]
+    Schema --> O2["OpenAI tools=[...] (parameters key)"]
+    Schema --> G2["Gemini function_declarations=[...] (parameters_json_schema)"]
+```
+
+- **One decorator, three vendors.** `@peter_tool(tier=...)` wraps the
+  function once; the Anthropic SDK's schema-inference (from type hints +
+  docstring) is reused as the JSON-Schema engine for *all three* providers —
+  not because Anthropic is privileged, but because it's already correct and
+  rewriting signature→schema inference three times would just be three
+  chances to get it wrong differently.
+- **Tool order is part of the cached prefix.** `tool_specs()` returns tools
+  in a stable, sorted order deliberately — a registry that reordered itself
+  between runs would invalidate the prompt cache for no reason.
+- **60 tools currently registered**, split by permission tier:
+
+| Module | Read | Write | What it covers |
+|---|---:|---:|---|
+| `system.py` | 7 | 8 | apps, files, clipboard, volume, screenshot, stats, lock, PowerShell |
+| `time_tools.py` | 3 | 6 | alarms, timers, reminders, to-dos |
+| `mail_tools.py` | 4 | 5 | read/search/send/star/archive/delete |
+| `calendar_tools.py` | 4 | 4 | events + Google Tasks |
+| `browser_tools.py` | 5 | 4 | read/click/type/login on sites with no API |
+| `memory_tools.py` | 2 | 4 | facts + preferences |
+| `briefing_tools.py` | 2 | 0 | morning briefing status |
+| `llm_tools.py` | 1 | 1 | switch / inspect provider |
+| **Total** | **28** | **32** | |
+
+  Notice there is no `spend` tier in this table — see §2.6, that boundary is
+  enforced structurally in the browser layer, not by a tool flag that a
+  mistake could flip.
+
+---
+
+### 2.4 Policy Gate — `peter/policy/gate.py`
+
+**Job:** the one place every tool call passes through before its body runs.
+Nothing calls a tool directly.
+
+```mermaid
+flowchart TD
+    Call["Tool call from the agent loop"] --> Tier{Tool's tier?}
+    Tier -->|read| Allow[Execute immediately]
+    Tier -->|write| Ask["Ask the human\n(spoken yes/no, or tray toast)"]
+    Tier -->|spend| Handoff["Never auto-execute.\nReturn a hand-off message:\nwhat's ready + what to tap"]
+
+    Ask -->|yes / within timeout| Allow
+    Ask -->|no / timeout / declined| Decline["Return 'user declined' as a\nnormal tool RESULT, not an exception"]
+
+    Allow --> Run[Tool body runs]
+    Handoff --> Log
+    Decline --> Log
+    Run --> Log[Audit log: one JSON line\ntimestamp · tool · args · tier · decision · result]
+```
+
+- **A decline is a tool *result*, not a raised exception.** If it raised,
+  the whole turn would abort and the user would hear nothing but a
+  generic error. Returning it as text means the model sees "the user
+  declined" and can react naturally — apologize, offer an alternative, ask
+  what to do instead.
+- **Per-tool overrides beat the tier default.** `config.yml`'s
+  `policy.standing_rules` can tighten or loosen a *specific* tool without
+  touching code — e.g. `delete_file` can be forced to always confirm even
+  though it's already `write`-tier by default.
+- **Fails closed.** The default confirmer when nothing else is wired up
+  (`AlwaysDeny`) refuses everything rather than allowing it. A Peter that's
+  annoyingly cautious is a nuisance; one that silently allows destructive
+  actions because no confirmer was configured is a disaster.
+- **Every decision is audited**, approved or not — `data/audit.jsonl` is the
+  forensic trail for "why did Peter do that."
+
+---
+
+### 2.5 Memory — `peter/memory/store.py`
+
+**Job:** remember things across restarts, and surface the *relevant* ones
+without being asked.
+
+```mermaid
+erDiagram
+    facts {
+        string key PK
+        string value
+        string source
+        datetime updated_at
+    }
+    preferences {
+        string key PK
+        string value
+    }
+    episodes {
+        int id PK
+        string summary
+        datetime created_at
+    }
+    todos {
+        int id PK
+        string text
+        bool done
+    }
+    facts ||--o{ FTS5_INDEX : "indexed for keyword search"
+```
+
+```mermaid
+sequenceDiagram
+    participant U as "which bus do I take home"
+    participant Brain
+    participant Mem as MemoryStore
+
+    U->>Brain: ask(text)
+    Brain->>Mem: context_block(text)
+    Mem->>Mem: FTS5 search_facts("bus home") — tokenized so raw\nspeech can't break FTS5 query syntax
+    Mem-->>Brain: "bus_route: route 70 to Gandhipuram"
+    Brain->>Brain: inject into the USER turn (never the system prompt)
+```
+
+- **SQLite + FTS5**, four tables: `facts` (durable statements about you),
+  `preferences` (how Peter should *behave* — e.g. "keep replies under two
+  sentences"), `episodes` (rolling conversation summaries), `todos`.
+- **Recall is automatic, not a tool the model has to remember to call.**
+  Every turn, `Brain._build_user_content()` runs a keyword search over your
+  message and silently prepends whatever facts share a token with it — the
+  bus-route example above only works because "bus" appears in both the
+  stored key's value and your question.
+- Speech is tokenized before it reaches FTS5's query parser specifically
+  because raw transcribed speech can contain characters (quotes, hyphens,
+  stray punctuation) that are meaningful *syntax* to FTS5's query language —
+  an untokenized query can outright fail to parse.
+
+---
+
+### 2.6 Browser Automation — `peter/integrations/browser/`
+
+**Job:** the only way to interact with the sites that have no API at all
+(Blinkit, Zepto, Myntra, Meesho, Swiggy, Zomato, most of Flipkart) — while
+never being able to spend money and never getting the whole session banned.
+
+```mermaid
+flowchart TD
+    Tool["browser_tools.py\nread tools: browse_page, check_price, find_on_page...\nwrite tools: browser_click, browser_type, browser_login"]
+    Tool --> Manager["BrowserManager\n(Playwright, persistent logged-in profile)"]
+    Manager --> Guard{"_guard(): rate limiter\nper-domain, before every navigation"}
+    Guard -->|too soon| Wait[Wait / back off]
+    Guard -->|ok| Nav[Navigate / act]
+    Nav --> Detect{"Bot-wall detector\n(CAPTCHA / block page)?"}
+    Detect -->|yes| Stop["STOP — hand off to human.\nNever solved, evaded, or retried automatically"]
+    Detect -->|no| Extract["extract.py:\n1. JSON-LD / OpenGraph (~50 tokens)\n2. fallback: screenshot (~1500 tokens)"]
+
+    Tool -->|browser_click specifically| Interlock{"interlock.is_purchase_action(label)?"}
+    Interlock -->|"'buy', 'pay', 'confirm & pay',\n'place order', bare payment verbs..."| Block["PurchaseBlocked raised.\nNO override parameter exists —\nverified by a signature-inspection test"]
+    Interlock -->|not a purchase label| Nav
+```
+
+- **Structured data first, screenshots last.** Almost every commerce page
+  already publishes JSON-LD/OpenGraph product data for Google Shopping to
+  read — price, name, availability, brand. Reading *that* costs roughly 50
+  tokens; a screenshot costs roughly 1,500. Screenshots are the fallback
+  when structured data is genuinely absent, not the default.
+- **Per-domain rate limiting is the primary anti-ban strategy** — more
+  effective in practice than trying to out-fingerprint commercial bot
+  detection (Akamai/PerimeterX/Cloudflare all run on these sites). A
+  persistent, real, headed browser profile with genuine cookies plus slow,
+  human-paced polling avoids most of what would otherwise get an account
+  suspended.
+- **A bot-wall (CAPTCHA, block page) is a stop signal, never a puzzle.**
+  `detect.py` exists to *recognize* that state and hand off to you, not to
+  solve it.
+- **The purchase interlock has no bypass parameter, on purpose.** This
+  isn't "ask before buying" — the function that would complete a purchase
+  simply doesn't exist in a callable form. `guard()` takes only a label to
+  check, and a dedicated test inspects the function's *signature* to assert
+  no override argument was ever added back in by accident.  This is the
+  code-level enforcement of RBI's mandatory-2FA rule from §1.3: even if the
+  policy gate were somehow bypassed, this layer still can't complete a
+  payment.
+- Nine tools total, split precisely because a single `browse_and_extract`
+  tool can't carry one permission tier: reading is `read`, clicking/typing
+  is `write`, and "place order" isn't a *tier* at all — it's structurally
+  unreachable.
+
+---
+
+### 2.6b Desktop control — `peter/integrations/desktop/`
+
+**Job:** drive the software already installed on the machine — your own
+browser, its bookmarks, whatever is playing, and local folders — from a spoken
+request that never names anything exactly.
+
+```mermaid
+flowchart TD
+    Say["'open the staging dashboard'"] --> Rank["matching.rank()<br/>token overlap + per-word fuzzy"]
+    Rank --> Q{"clear winner?<br/>(high score AND beats runner-up)"}
+    Q -->|yes| Act["Open it in the preferred browser"]
+    Q -->|"several close"| Ask["Return the candidates as a normal result<br/>Peter asks which one"]
+    Q -->|"nothing above floor"| None["Say so, suggest search_bookmarks"]
+
+    subgraph Sources["what gets searched"]
+        FF["Firefox<br/>places.sqlite (copied — locked while running)"]
+        CR["Chrome / Edge / Brave<br/>Bookmarks JSON"]
+        PL["Standard Windows folders<br/>+ desktop.places from config"]
+    end
+    Sources -.-> Rank
+
+    Media["'pause' / 'next' / 'louder'"] --> Keys["media.send()<br/>keybd_event, real media keys"]
+    Keys --> Any["Whatever holds media focus:<br/>YouTube, Spotify, VLC..."]
+```
+
+Four decisions worth knowing:
+
+- **Ambiguity is a result, not a failure.** With 104 real bookmarks, "log
+  search" genuinely matches four things. `rank()` only reports a confident
+  winner when the top score is high *and* clears the runner-up by a margin;
+  otherwise the tool returns the candidates and Peter asks. Silently opening
+  one of four similar bookmarks is worse than one short question.
+- **Character similarity cannot carry a match on its own.** Found live:
+  `"zzz nothing"` scores 0.44 against `"HDFC Net Banking"` on incidental
+  shared letters. Fuzzy scoring is discounted by half unless at least one word
+  actually overlaps — but per-*word* similarity is kept, so `"dashbord"` still
+  finds `"dashboard"`, which is what a speech transcript really produces.
+- **Firefox's bookmark database is copied before reading.** `places.sqlite` is
+  locked exactly when you want it — while Firefox is open — so it is copied to
+  temp and the copy is queried.
+- **Playback uses real media keys, not page automation.** `keybd_event` with
+  the same virtual keys as a media keyboard, so Windows routes them to whatever
+  currently has media focus. Driving the YouTube page through Playwright would
+  only work for YouTube, only in Peter's own browser instance, and would break
+  whenever the markup changed.
+
+YouTube search deserves its own note: the top result is found by fetching the
+search page and reading the `"videoId"` fields out of the JSON embedded in its
+HTML — no API key, no quota, no browser. It depends on an internal page format,
+so it fails cleanly: if the pattern stops matching, the tool opens the search
+results page instead of doing nothing.
+
+### 2.7 Integrations — `peter/integrations/{mail,google}/` + `peter/core/services.py`
+
+**Job:** everything networked and optional is built **lazily**, on first
+use, and never blocks startup.
+
+```mermaid
+flowchart LR
+    subgraph Container["ServiceContainer (peter/core/services.py)"]
+        direction TB
+        Eager["Eager, built at startup:\nmemory · scheduler · audit · brain"]
+        Lazy["Lazy, built on first use:\nmail() · calendar() · tasks() · browser()"]
+    end
+
+    Lazy -->|first call to mail tool| MailC["MailClient\nIMAP + SMTP, app password\nNO Gmail OAuth — see below"]
+    Lazy -->|first call to calendar tool| GAuth["Google OAuth client\nCalendar + Tasks scopes only"]
+    Lazy -->|first call to browser tool| Browser["Playwright persistent context"]
+
+    MailC -.missing config.-> NC1["NotConfiguredError\nwith the exact .env keys to set"]
+    GAuth -.missing config.-> NC2[NotConfiguredError]
+```
+
+- **Why IMAP/SMTP instead of the Gmail API for mail:** a personal Google
+  Cloud project in "Testing" status issues refresh tokens for Gmail's
+  *restricted* scope that **expire after 7 days** — Peter would silently
+  stop reading your email every week until manually re-authorized. Moving
+  to "In Production" for a restricted scope requires a third-party Google
+  security audit, unrealistic for a personal project. Plain IMAP with an
+  app password sidesteps the OAuth trap entirely for reading mail, at the
+  cost of losing Gmail's label/thread richness.
+- **Calendar/Tasks stay on OAuth** because those scopes are only
+  *sensitive*, not *restricted* — they don't carry the 7-day trap, so a
+  narrow, separate OAuth client for just those two scopes is fine.
+- **Constructing a client is deferred until the first tool call that needs
+  it.** Building an IMAP connection at process startup would mean Peter
+  refuses to boot when the wifi is briefly down, and adds seconds to launch
+  for integrations a given session might never touch. `NotConfiguredError`
+  carries the *exact* fix (which `.env` keys, which CLI flag) rather than a
+  bare failure.
+- `ServiceContainer.health()` (surfaced by `python -m peter.main --health`)
+  walks every provider/integration and reports its real state — this is the
+  single command that answers "is everything wired up correctly."
+
+---
+
+### 2.8 Scheduler — `peter/scheduler/jobs.py`
+
+**Job:** alarms, timers, reminders, and the daily briefing must survive the
+process being killed and restarted — a reminder that silently disappears on
+a crash is worse than no reminder at all.
+
+```mermaid
+flowchart LR
+    Tool["set_reminder / set_alarm / set_timer\n(time_tools.py)"] --> Sched["APScheduler\n+ SQLite jobstore (same db_path as memory)"]
+    Sched -->|job fires, even after a restart| Fire["fire_reminder()\nmodule-level function"]
+    Fire --> Speak[Speaks the reminder]
+    Fire --> Toast[Shows a toast]
+```
+
+- **Job targets must be module-level functions**, never bound methods or
+  lambdas — APScheduler serializes a job by its Python *import path* to
+  survive a restart, and a bound method or lambda has no stable import path
+  to serialize. This is why `fire_reminder()` is a free function, not a
+  method on `Scheduler`.
+- Alarms, timers, and reminders are three thin wrappers (`add_once`,
+  `add_in`, `add_daily`) over the same underlying job store, so "survives
+  restart" is one property proven once, not three times.
+
+---
+
+### 2.9 Supervisor loop — `peter/main.py`
+
+**Job:** own every long-lived object, wire the layers together, and make
+sure one bad turn never takes down the whole session.
+
+```mermaid
+flowchart TD
+    Start["python -m peter.main"] --> Cfg["load_config()\nvalidates config.yml + .env"]
+    Cfg --> Init["Peter.__init__:\nregistry.load_all_tools()\nServiceContainer + memory + scheduler + audit\nPolicyGate\nBrain (picks provider)"]
+    Init --> StartCmd["Peter.start():\nscheduler.start()\nschedule_briefing()"]
+    StartCmd --> Mode{"--text or voice?"}
+    Mode -->|--text| TextLoop["stdin → handle() → print"]
+    Mode -->|voice| VoiceLoop["_voice_tick() loop:\nmic → wake word → STT → handle() → TTS"]
+
+    TextLoop --> Handle
+    VoiceLoop --> Handle["Peter.handle(text):\ntry: brain.ask(text)\nexcept PeterError: speak the message\nexcept Exception: speak a generic error, log full traceback"]
+
+    Handle -->|one bad turn| Recover["Loop continues.\nNever the bare `except: pass` of peter_1.0/2.0"]
+```
+
+- **Every turn is isolated.** `handle()` catches both known (`PeterError`)
+  and unknown exceptions, turns either into something speakable, and lets
+  the *loop* continue — this directly replaces peter_1.0/2.0's single
+  `except: pass` around the entire program, which either died silently or
+  killed the whole assistant with no trace of why.
+- **Nothing is a module-level global.** Every service is constructed in
+  `Peter.__init__`, held in one `ServiceContainer`, and torn down in
+  `shutdown()` — this is what makes the whole thing testable: tests build
+  their own container and swap it in instead of fighting shared global
+  state.
+- `--health`, `--devices`, `--briefing`, `--google-auth` are all short-lived
+  commands that build just enough of the container to answer the question
+  and exit — they do not start the voice loop.
+
+---
+
+## Appendix — file map
+
+```
+peter_3.0/
+├── config/config.yml         # everything non-secret, committed
+├── .env                      # secrets only, gitignored
+├── peter/
+│   ├── main.py                # §2.9 supervisor loop
+│   ├── agent/
+│   │   ├── brain.py            # §2.2 turn orchestration
+│   │   ├── prompts.py          # §2.2.3 frozen system prompt
+│   │   └── registry.py         # §2.3 @peter_tool → schema + tier
+│   ├── llm/
+│   │   ├── loop.py              # §2.2.1 the one shared tool-call loop
+│   │   ├── base.py              # vendor-neutral types
+│   │   ├── factory.py           # picks + builds the active provider
+│   │   ├── pricing.py           # $/Mtok table, cost estimation
+│   │   └── providers/           # §2.2.2 anthropic / openai / gemini
+│   ├── policy/
+│   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
+│   │   └── audit.py              # append-only JSONL trail
+│   ├── tools/                   # §2.3 the 60 registered tools
+│   ├── memory/store.py          # §2.5 SQLite + FTS5
+│   ├── scheduler/jobs.py        # §2.8 APScheduler + SQLite jobstore
+│   ├── integrations/
+│   │   ├── mail/                 # §2.7 IMAP/SMTP
+│   │   ├── google/               # §2.7 Calendar/Tasks OAuth
+│   │   └── browser/              # §2.6 Playwright + purchase interlock
+│   ├── voice/                   # §2.1 wake / stt / tts / audio
+│   └── core/
+│       ├── config.py             # config.yml + .env loader/validator
+│       ├── services.py           # the lazy ServiceContainer
+│       ├── errors.py             # PeterError hierarchy
+│       └── logging.py            # literal-value secret redaction
+└── tests/                     # one test file per subsystem above
+```

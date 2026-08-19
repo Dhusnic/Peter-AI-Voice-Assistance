@@ -1,0 +1,290 @@
+# Peter 3.0 — configuration
+#
+# Everything that is NOT a secret lives here, and this file is committed to git.
+# Secrets (API keys, passwords, OAuth client secrets) live in .env, which is not.
+#
+# Any value here can be overridden by an environment variable using the path
+# with double underscores, e.g.
+#     PETER__AGENT__MODEL=claude-sonnet-5
+#     PETER__APP__LOG_LEVEL=DEBUG
+# which is how you change one setting for one run without editing this file.
+
+app:
+  user_name: Dhusnic
+  assistant_name: Peter
+  data_dir: ./data
+  log_level: INFO
+  log_format: rich          # rich | json  (json for shipping logs somewhere)
+
+agent:
+  # Which vendor answers. Switchable by voice at runtime ("switch to Gemini"),
+  # for one run with --provider gemini or PETER__AGENT__PROVIDER=gemini, or
+  # permanently by changing this line. Only matters if that vendor's key is
+  # actually set in .env — check `python -m peter.main --health`.
+  provider: gemini           # anthropic | openai | gemini
+
+  # One model per vendor, so switching provider does not need a second edit.
+  # To change which model a vendor uses, just edit its line below — pick from
+  # the options in that provider's comment. Prices are $/Mtok, input / output.
+  models:
+    # anthropic (Claude) — https://docs.anthropic.com/en/docs/about-claude/models
+    #   claude-opus-5    5.00 / 25.00  smartest, best for hard reasoning/agentic work
+    #   claude-sonnet-5  3.00 / 15.00  strong default, good cost/quality balance
+    #   claude-haiku-4-5 1.00 / 5.00   fastest+cheapest Claude, simple/routine turns
+    #   claude-fable-5   5.00 / 25.00  Opus-tier, tuned for creative/long-form writing
+    anthropic: claude-opus-5
+
+    # openai (GPT) — https://platform.openai.com/docs/models
+    #   gpt-5.6-sol      5.00 / 30.00  top-tier reasoning, most expensive
+    #   gpt-5.6-terra    2.00 / 12.00  solid mid-tier default
+    #   gpt-5.6-luna     0.20 / 1.20   cheapest, best for simple/high-volume turns
+    openai: gpt-5.6-terra
+
+    # gemini (Google) — prices verified against ai.google.dev/gemini-api/docs/pricing
+    #   auto                    --          smart per-turn routing between the
+    #                                        rows below — see gemini_auto just
+    #                                        underneath. Cheap model for routine
+    #                                        turns, the strong one only when
+    #                                        the turn actually needs it.
+    #   gemini-3.1-pro-preview  2.00 / 12.00  strongest Gemini, best reasoning
+    #   gemini-3.7-flash        0.75 / 3.75   latest flash, fast + cheap, good default
+    #   gemini-3.6-flash        0.75 / 3.75   same price as 3.7, one generation back
+    #   gemini-3.5-flash        1.50 / 9.00   older flash generation, no longer cheapest
+    gemini: auto
+
+  # Only read when models.gemini above is "auto". Peter classifies each turn's
+  # own text — free, instant, no extra API call — and picks light_model for a
+  # routine lookup or heavy_model for something that actually needs deeper
+  # reasoning (keywords like "explain"/"compare"/"debug"...), a high-stakes
+  # action (delete/buy/pay/powershell...), or a request longer than the word
+  # threshold. See peter/llm/router.py for the exact rules. Gemini-only for
+  # now — Claude and GPT do not have this large a price gap within one family.
+  gemini_auto:
+    light_model: gemini-3.7-flash
+    heavy_model: gemini-3.1-pro-preview
+    heavy_word_threshold: 40
+
+  # When a Gemini model returns a recoverable error (rate limit, momentary
+  # 503) these same-tier substitutes are tried immediately, with no delay,
+  # before the exponential backoff below ever kicks in — a fast hedge against
+  # one model being briefly overloaded, tried in order, remembering whichever
+  # one last worked so later turns do not keep re-probing a model still down.
+  # Kept to the same price tier deliberately: this is a hedge against an
+  # outage, not licence to spend more per token.
+  gemini_fallbacks:
+    gemini-3.7-flash: [gemini-3.6-flash, gemini-3.5-flash]
+
+  # Explicit server-side caching of the prompt prefix (Gemini only).
+  # The system prompt plus every tool schema is re-sent on every API call and
+  # is ~98% of what Peter spends. Cached, it bills at a tenth of list price —
+  # measured 99.96% coverage from the first call, versus ~50% (after two cold
+  # calls) from Gemini's automatic implicit caching.
+  # Storage is billed per hour, so the cache is created on first use, its TTL
+  # is pushed out while you keep talking, and it is deleted at shutdown rather
+  # than held around the clock.
+  cache:
+    enabled: true
+    ttl_seconds: 900        # refreshed on each use; lapses when idle
+    # Gemini will not cache a prefix below 4,096 tokens. Trimming the prompt
+    # or tool list under this floor DISABLES caching and costs more, not less.
+    min_tokens: 4096
+
+  # What happens when the active provider fails for a transient reason (rate
+  # limit, momentary outage, dropped connection) — anything the provider
+  # itself marks recoverable. Peter retries with exponential backoff + jitter,
+  # announcing each attempt in text/voice, and only surfaces the real error
+  # after the last one fails. A wrong API key or a non-transient error is
+  # never retried — no number of attempts fixes a bad key.
+  retry:
+    max_attempts: 5             # total tries, including the first
+    base_delay_seconds: 10      # delay before retry 1; roughly doubles each time
+    max_delay_seconds: 60       # delay never grows past this
+
+  # Model used for cheap/routine background turns regardless of active
+  # provider (e.g. summarizing, quick lookups) — always Claude's cheapest,
+  # independent of `provider` above.
+  fast_model: claude-haiku-4-5
+  effort: low               # low | medium | high | xhigh | max
+  max_tokens: 8000
+  # Turns kept in the rolling context window before the oldest are dropped.
+  max_history_messages: 40
+  # Cap on resuming a turn that a server-side tool paused.
+  max_pause_restarts: 5
+  # Prompt cache lifetime for the system prefix.
+  cache_ttl: 1h
+  enable_web_tools: true
+
+voice:
+  wake:
+    # A built-in openWakeWord model (alexa, hey_mycroft, hey_jarvis,
+    # hey_rhasspy) or an absolute path to a custom-trained .onnx file.
+    # There is no built-in "Peter" model — see the README.
+    model: hey_jarvis
+    threshold: 0.5
+    # Frames ignored after a detection, so one utterance fires once.
+    refractory_frames: 25
+
+  stt:
+    model: small.en         # tiny.en | base.en | small.en | medium.en | large-v3
+    device: cpu             # cpu | cuda
+    compute_type: int8      # int8 on cpu, float16 on cuda
+    # Endpointing: how long a pause has to be before Peter decides you finished.
+    silence_to_end: 0.8
+    max_utterance: 20.0
+    max_lead_in: 6.0
+    min_speech: 0.3
+    # Speech must exceed the measured room noise floor by this factor.
+    noise_margin: 3.0
+    min_threshold: 0.006
+
+  tts:
+    engine: piper           # piper (local) | edge (online) | sapi (windows)
+    # Path to a Piper .onnx voice. Download from:
+    #   https://huggingface.co/rhasspy/piper-voices
+    piper_voice: ./data/voices/en_US-lessac-medium.onnx
+    edge_voice: en-IN-PrabhatNeural
+    sapi_rate: 185
+
+  audio:
+    # null means the system default. Run `python -m peter.main --devices`.
+    input_device: null
+    output_device: null
+
+policy:
+  # tier -> what happens when a tool of that tier is called
+  #   allow   run it
+  #   confirm ask first; a refusal returns to Claude as a normal tool result
+  #   handoff never run; hand back to the human (money)
+  #   deny    never run
+  default_tiers:
+    read: allow
+    write: confirm
+    spend: handoff
+
+  confirm_timeout_seconds: 45
+
+  # Per-tool overrides. These beat the tier default.
+  standing_rules:
+    # Cheap and reversible — not worth a prompt.
+    set_reminder: allow
+    set_alarm: allow
+    set_timer: allow
+    add_todo: allow
+    complete_todo: allow
+    cancel_reminder: allow
+    set_clipboard: allow
+    llm_status: allow
+    mark_email_read: allow
+    star_email: allow
+
+    # Browsing is reading. Interacting with a page is not.
+    browse_page: allow
+    check_price: allow
+    browser_status: allow
+    find_on_page: allow
+    take_page_screenshot: allow
+
+    # Destructive or arbitrary. Do not relax without understanding the cost.
+    delete_file: confirm
+    run_powershell: confirm
+    lock_workstation: confirm
+    send_email: confirm
+    delete_email: confirm
+    delete_calendar_event: confirm
+    browser_click: confirm
+    browser_type: confirm
+    switch_llm_provider: confirm
+
+integrations:
+  # Controlling software already installed on this machine: your own browser,
+  # bookmarks, media playback, local folders. Distinct from `browser:` further
+  # down, which is Playwright driving a scripted session Peter owns — this is
+  # your browser, opened for you to look at.
+  desktop:
+    enabled: true
+
+    # Which browser links open in. "default" follows the Windows setting.
+    # Detected automatically: firefox, chrome, edge, brave.
+    preferred_browser: firefox
+    # Named profile, if you keep more than one. Firefox wants the profile
+    # NAME; Chromium wants the directory ("Default", "Profile 1").
+    browser_profile: ""
+
+    # Gmail addresses accounts positionally (mail.google.com/mail/u/<n>), so
+    # this maps what you say onto that index. A full email address also works
+    # and survives the order changing.
+    #   "open my work mail" -> u/1
+    gmail_accounts: {}
+    #   personal: "0"
+    #   work: "1"
+
+    # Named shortcuts for sites. These override the built-in names (gmail,
+    # youtube, drive, calendar, maps, github, whatsapp).
+    sites: {}
+    #   jira: https://your-company.atlassian.net
+
+    # Extra folders openable by name, on top of the standard Windows ones
+    # (desktop, documents, downloads, pictures, videos, music, home).
+    places:
+      peter project: D:/Peter-AI-Voice-Assistance
+
+    # Whose bookmarks to search. Empty means every installed browser.
+    bookmark_sources: []
+
+  mail:
+    enabled: true
+    # IMAP is used instead of the Gmail API on purpose: Gmail API scopes are
+    # "restricted", which forces a 7-day refresh-token expiry on personal
+    # projects. An app password has no expiry. See README.
+    imap_host: imap.gmail.com
+    imap_port: 993
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    inbox_folder: INBOX
+    archive_folder: "[Gmail]/All Mail"
+    trash_folder: "[Gmail]/Trash"
+    # Cap on messages fetched per request, and characters of body kept.
+    fetch_limit: 25
+    body_chars: 4000
+    timeout_seconds: 30
+
+  google:
+    enabled: true
+    # Calendar and Tasks scopes are "sensitive", not "restricted" — they do not
+    # need the security audit Gmail would. Set the consent screen to
+    # "In Production" to escape the 7-day token expiry. See README.
+    scopes:
+      - https://www.googleapis.com/auth/calendar
+      - https://www.googleapis.com/auth/tasks
+    calendar_id: primary
+    tasklist_id: "@default"
+    oauth_port: 0             # 0 = pick any free port
+    timeout_seconds: 30
+
+  browser:
+    enabled: true
+    # Headed on purpose. You can see what it is doing and stop it, and headless
+    # Chromium is the loudest automation signal there is.
+    headless: false
+    profile_dir: ./data/browser_profile
+    default_timeout_seconds: 30
+    # Minimum seconds between requests to the SAME domain. This is the single
+    # most effective measure against getting an account flagged — far more than
+    # any fingerprint trick. Do not lower it to speed up price checks.
+    min_interval_seconds: 20
+    max_page_chars: 6000
+    # Sites Peter may open at all. Empty list = no restriction. Filling this in
+    # is the cheapest way to bound the blast radius of a misread instruction.
+    allowed_domains: []
+
+  briefing:
+    enabled: true
+    # Daily spoken summary. Set enabled: false to turn it off entirely.
+    time: "07:30"
+    include:
+      - calendar
+      - mail
+      - reminders
+      - todos
+    max_emails: 5
+    max_events: 6

@@ -1,0 +1,48 @@
+# --- secrets -----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- OAuth tokens and credentials --------------------------------------------
+# google_token.json holds a live refresh token for the calendar. Treat it as a
+# password, not a cache.
+*token.json
+credentials.json
+client_secret*.json
+
+# --- runtime state ------------------------------------------------------------
+data/
+*.db
+*.db-journal
+*.sqlite3
+*.log
+audit.jsonl
+
+# --- downloaded models (large, and reproducible) ------------------------------
+*.onnx
+*.onnx.json
+*.tflite
+models/
+voices/
+
+# --- browser profile (phase 3) ------------------------------------------------
+browser_profile/
+
+# --- python -------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+requirements.lock.txt
+
+# --- editors ------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
