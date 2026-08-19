@@ -15,74 +15,110 @@ explains the single most important design decision in the codebase.
 
 ### 1.1 Feature map
 
+A top-down tree with 10 wide branches squeezes every leaf onto one band and
+shrinks past legibility. Laid out left-to-right instead, with each category
+in its own panel, the same content reads top-to-bottom in natural,
+scrollable groups:
+
 ```mermaid
-flowchart TB
-    P((Peter 3.0))
+flowchart LR
+    P(("Peter 3.0"))
 
-    P --> V[Voice]
-    V --> V1["Wake word: 'Hey Peter'"]
-    V --> V2[Speech-to-text, local, offline]
-    V --> V3[Text-to-speech, sentence-streamed]
-    V --> V4[Barge-in: interrupt Peter mid-sentence]
-    V --> V5["--text mode: type instead of speak"]
+    subgraph SG_V["Voice"]
+        direction TB
+        V1["Wake word: 'Hey Peter'"]
+        V2["Speech-to-text, local, offline"]
+        V3["Text-to-speech, sentence-streamed"]
+        V4["Barge-in: interrupt Peter mid-sentence"]
+        V5["--text mode: type instead of speak"]
+    end
 
-    P --> S[System Control]
-    S --> S1[Open apps / URLs]
-    S --> S2[Read, write, move, delete, search files]
-    S --> S3[Screenshot, clipboard, volume]
-    S --> S4[System stats: CPU / RAM / disk / battery]
-    S --> S5[Lock workstation]
-    S --> S6["Run PowerShell — the full-access escape hatch"]
+    subgraph SG_S["System Control"]
+        direction TB
+        S1["Open apps / URLs"]
+        S2["Read, write, move, delete, search files"]
+        S3["Screenshot, clipboard, volume"]
+        S4["System stats: CPU / RAM / disk / battery"]
+        S5["Lock workstation"]
+        S6["Run PowerShell — the full-access escape hatch"]
+    end
 
-    P --> T[Time & Tasks]
-    T --> T1[Alarms, timers, reminders]
-    T --> T2[To-do list]
-    T --> T3[Survives restart — jobs persisted in SQLite]
+    subgraph SG_T["Time & Tasks"]
+        direction TB
+        T1["Alarms, timers, reminders"]
+        T2["To-do list"]
+        T3["Survives restart — jobs persisted in SQLite"]
+    end
 
-    P --> M[Memory]
-    M --> M1[Remembers facts you tell it]
-    M --> M2[Remembers your preferences]
-    M --> M3[Recalls them by keyword search, unprompted]
-    M --> M4[Keeps a rolling log of past conversations]
+    subgraph SG_M["Memory"]
+        direction TB
+        M1["Remembers facts you tell it"]
+        M2["Remembers your preferences"]
+        M3["Recalls them by keyword search, unprompted"]
+        M4["Keeps a rolling log of past conversations"]
+    end
 
-    P --> E[Email]
-    E --> E1[Read / search / count unread]
-    E --> E2[Send]
-    E --> E3[Star, archive, delete, mark read]
-    E --> E4["No Google OAuth needed — plain IMAP/SMTP"]
+    subgraph SG_E["Email"]
+        direction TB
+        E1["Read / search / count unread"]
+        E2["Send"]
+        E3["Star, archive, delete, mark read"]
+        E4["No Google OAuth needed — plain IMAP/SMTP"]
+    end
 
-    P --> C[Calendar & Tasks]
-    C --> C1[Check today / upcoming events]
-    C --> C2[Create / delete events]
-    C --> C3[Google Tasks: list, add, complete]
-    C --> C4[Morning briefing: mail + calendar + reminders]
+    subgraph SG_C["Calendar & Tasks"]
+        direction TB
+        C1["Check today / upcoming events"]
+        C2["Create / delete events"]
+        C3["Google Tasks: list, add, complete"]
+        C4["Morning briefing: mail + calendar + reminders"]
+    end
 
-    P --> B["Browser (sites with no API)"]
-    B --> B1[Read any product page: price, name, availability]
-    B --> B2[Click / type / fill forms on your behalf]
-    B --> B3[Log in once, session reused]
-    B --> B4["Hard-blocked from ever clicking 'Buy' / 'Pay'"]
-    B --> B5[Per-site rate limiting to avoid bans]
+    subgraph SG_B["Browser (sites with no API)"]
+        direction TB
+        B1["Read any product page: price, name, availability"]
+        B2["Click / type / fill forms on your behalf"]
+        B3["Log in once, session reused"]
+        B4["Hard-blocked from ever clicking 'Buy' / 'Pay'"]
+        B5["Per-site rate limiting to avoid bans"]
+    end
 
-    P --> L[Multi-LLM Brain]
-    L --> L1["3 providers: Claude, GPT, Gemini"]
-    L --> L2[Switch by voice mid-conversation]
-    L --> L3["Live running-cost meter, per session — shown in ₹"]
-    L --> L4[Per-provider model choice, editable in config.yml]
-    L --> L5["Gemini: smart per-turn routing between a cheap\nand a strong model, based on the turn's own text"]
-    L --> L6["Gemini: same-tier fallback on a rate limit / 503,\nno added delay, sticky for the rest of the session"]
-    L --> L7["Retry with exponential backoff on any\nrecoverable error, announced as it happens"]
+    subgraph SG_L["Multi-LLM Brain"]
+        direction TB
+        L1["3 providers: Claude, GPT, Gemini"]
+        L2["Switch by voice mid-conversation"]
+        L3["Live running-cost meter, per session — shown in ₹"]
+        L4["Per-provider model choice, editable in config.yml"]
+        L5["Gemini: smart per-turn routing between a cheap\nand a strong model, based on the turn's own text"]
+        L6["Gemini: same-tier fallback on a rate limit / 503,\nno added delay, sticky for the rest of the session"]
+        L7["Retry with exponential backoff on any\nrecoverable error, announced as it happens"]
+    end
 
-    P --> G["Safety & Governance"]
-    G --> G1["Every action tiered: read / write / spend"]
-    G --> G2[Writes need a spoken or tray confirmation]
-    G --> G3[Spend never auto-executes — hands off to you]
-    G --> G4[Append-only audit log of every tool call]
+    subgraph SG_G["Safety & Governance"]
+        direction TB
+        G1["Every action tiered: read / write / spend"]
+        G2["A small set of destructive tools still confirm"]
+        G3["Spend never auto-executes — hands off to you"]
+        G4["Append-only audit log of every tool call"]
+    end
 
-    P --> PR[Proactive]
-    PR --> PR1["Meeting-prep nudge: calendar + memory, unprompted"]
-    PR --> PR2["Inbox digest: what actually needs a reply"]
-    PR --> PR3["Focus mode: mute, time-box, restore, summarize"]
+    subgraph SG_PR["Proactive"]
+        direction TB
+        PR1["Meeting-prep nudge: calendar + memory, unprompted"]
+        PR2["Inbox digest: what actually needs a reply"]
+        PR3["Focus mode: mute, time-box, restore, summarize"]
+    end
+
+    P --> SG_V
+    P --> SG_S
+    P --> SG_T
+    P --> SG_M
+    P --> SG_E
+    P --> SG_C
+    P --> SG_B
+    P --> SG_L
+    P --> SG_G
+    P --> SG_PR
 ```
 
 ### 1.2 What each area means in practice
