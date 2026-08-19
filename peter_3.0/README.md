@@ -413,6 +413,18 @@ extraction, per-domain rate limiting, bot-wall detection, and a purchase
 interlock. Read-only browsing and price checks run freely; clicking confirms;
 buying is refused.
 
+**Desktop control** — open installed apps, named sites and Gmail accounts in
+your preferred browser, search and open browser bookmarks (with a YouTube
+override browser), play/control YouTube via media keys, and open local
+folders by name.
+
+**Proactive features** — a meeting-prep nudge shortly before a calendar
+event (who's on it, plus anything relevant said in a past conversation), a
+read-only inbox digest that flags which unread mail plausibly needs a reply,
+and a focus-mode timer that mutes the system and restores it when done. All
+three poll rather than pre-schedule, so a moved meeting or new mail is
+picked up on the next check rather than missed.
+
 **Not built yet** — price and seat *tracking* (Phase 4: scheduled watchers built
 on this layer), cart-building hand-off (Phase 5), SMS via an Android bridge
 (Phase 6), parallel subagents for multi-site comparison (Phase 7).

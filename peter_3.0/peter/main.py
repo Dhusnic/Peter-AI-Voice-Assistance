@@ -33,6 +33,8 @@ from peter.core.config import Config, get_config
 from peter.core.errors import ConfigError, PeterError
 from peter.core.logging import configure_logging
 from peter.core.services import ServiceContainer, set_container
+from peter.inbox_digest import schedule_inbox_digest
+from peter.meeting_prep import schedule_meeting_prep
 from peter.memory.store import MemoryStore
 from peter.policy.audit import AuditLog
 from peter.policy.gate import ConsoleConfirmer, Policy, PolicyGate
@@ -46,9 +48,10 @@ class Peter:
     """Owns every long-lived object and the turn loop."""
 
     def __init__(self, config: Config, text_mode: bool = False,
-                 provider: str | None = None):
+                 provider: str | None = None, console=None):
         self.config = config
         self.text_mode = text_mode
+        self.console = console
         self.stopping = threading.Event()
 
         registry.load_all_tools(config=config)
@@ -80,6 +83,8 @@ class Peter:
     def start(self) -> None:
         self.container.scheduler.start()
         schedule_briefing(self.container.scheduler, self.config)
+        schedule_meeting_prep(self.container.scheduler, self.config)
+        schedule_inbox_digest(self.container.scheduler, self.config)
         log.info(
             "%s/%s | %d tools | %d job(s) scheduled",
             self.brain.provider_name,
@@ -122,31 +127,27 @@ class Peter:
 
     # ------------------------------------------------------------- text mode
     def run_text(self) -> None:
-        from contextlib import contextmanager
-
         from rich.console import Console
 
-        self.speaker = PrintSpeaker()
-        self.container.speaker = self.speaker
-        console = Console()
+        from peter.ui.progress import ProgressReporter
+
         name = self.config.app.assistant_name
-        status = console.status(f"[bold cyan]{name} is thinking...[/]",
-                                 spinner="dots12", spinner_style="cyan")
+        # The same Console configure_logging() gave RichHandler — sharing it
+        # is what stops a log line from garbling the spinner mid-frame.
+        console = self.console or Console()
+        reporter = ProgressReporter(console, name)
 
-        @contextmanager
-        def suspend_spinner():
-            # A confirmation prompt reads stdin while the spinner is still
-            # animating — both redraw the same terminal line, which mangles
-            # the "[y/N]" prompt and whatever gets typed in response. Stop the
-            # spinner for exactly the duration of the prompt, resume after, so
-            # a turn with several confirmations still shows it between them.
-            status.stop()
-            try:
-                yield
-            finally:
-                status.start()
+        self.speaker = PrintSpeaker(console=console)
+        self.container.speaker = self.speaker
+        self.brain.progress_hook = reporter.on_progress
+        self.brain.retry_hook = reporter.retrying
 
-        self.gate.set_confirmer(ConsoleConfirmer(suspend=suspend_spinner))
+        # A confirmation prompt reads stdin while the spinner is still
+        # animating — both redraw the same terminal line, which mangles the
+        # "[y/N]" prompt and whatever gets typed in response. reporter.suspend
+        # stops it for exactly the duration of the prompt and resumes after,
+        # so a turn with several confirmations still shows it between them.
+        self.gate.set_confirmer(ConsoleConfirmer(suspend=reporter.suspend))
 
         print(f"{name} 3.0 - text mode. Ctrl-C or 'quit' to exit.\n")
         while not self.stopping.is_set():
@@ -159,11 +160,11 @@ class Peter:
                 continue
             if line.lower() in ("quit", "exit", "bye"):
                 break
-            status.start()
+            reporter.start()
             try:
                 reply = self.handle(line)
             finally:
-                status.stop()
+                reporter.stop()
             self.speaker.say(reply)
             log.debug("usage: %s", self.brain.usage_summary())
 
@@ -348,6 +349,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Configuration error:\n{exc}", file=sys.stderr)
         return 2
 
+    # One Console for the whole process. Text mode's status spinner and
+    # RichHandler both render through it, which is what lets Rich suspend and
+    # redraw cleanly around a log line instead of the two colliding.
+    console = None
+    if config.app.log_format == "rich":
+        from rich.console import Console
+
+        console = Console()
+
     configure_logging(
         level=config.app.log_level,
         fmt=config.app.log_format,
@@ -358,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             config.secrets.mail_password,
             config.secrets.google_secret,
         ),
+        console=console,
     )
 
     if args.devices:
@@ -384,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         text_mode = _prompt_for_mode(config.app.assistant_name)
 
     try:
-        peter = Peter(config, text_mode=text_mode, provider=args.provider)
+        peter = Peter(config, text_mode=text_mode, provider=args.provider, console=console)
     except PeterError as exc:
         log.error("%s", exc)
         if getattr(exc, "user_action", ""):

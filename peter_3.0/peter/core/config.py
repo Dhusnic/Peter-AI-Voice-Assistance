@@ -134,6 +134,10 @@ class AgentConfig(BaseModel):
     cache_ttl: Literal["5m", "1h"] = "1h"
     enable_web_tools: bool = True
     retry: RetryConfig = Field(default_factory=RetryConfig)
+    # Every provider bills in USD; usage summaries display in INR instead.
+    # There is no live FX feed, so this is a manually maintained rate — update
+    # it here occasionally rather than trusting it to stay exact forever.
+    usd_to_inr_rate: float = Field(default=88.0, gt=0)
 
 
 class WakeConfig(BaseModel):
@@ -175,7 +179,7 @@ class VoiceConfig(BaseModel):
 
 class PolicyConfig(BaseModel):
     default_tiers: dict[str, str] = Field(
-        default_factory=lambda: {"read": "allow", "write": "confirm",
+        default_factory=lambda: {"read": "allow", "write": "allow",
                                  "spend": "handoff"}
     )
     confirm_timeout_seconds: float = Field(default=45.0, gt=0)
@@ -279,6 +283,10 @@ class DesktopConfig(BaseModel):
     # Named browser profile, if you keep more than one. Firefox wants the
     # profile *name*; Chromium wants the directory ("Default", "Profile 1").
     browser_profile: str = ""
+    # YouTube specifically opens here instead of preferred_browser — empty
+    # means "no override, use preferred_browser like everything else".
+    youtube_browser: str = ""
+    youtube_browser_profile: str = ""
     # Spoken label -> Gmail account index, as in mail.google.com/mail/u/<n>.
     # An email address works too and is more robust if the order ever changes.
     gmail_accounts: dict[str, str] = Field(default_factory=dict)
@@ -291,12 +299,38 @@ class DesktopConfig(BaseModel):
     sites: dict[str, str] = Field(default_factory=dict)
 
 
+class MeetingPrepConfig(BaseModel):
+    """Proactive nudge before a calendar event. See peter/meeting_prep.py."""
+
+    enabled: bool = True
+    # How long before an event to speak up.
+    lead_minutes: int = Field(default=10, gt=0, le=120)
+    # How often to re-check the calendar. Keep at or below lead_minutes, or a
+    # short meeting can slip through the gap between two polls unannounced.
+    poll_interval_minutes: int = Field(default=5, gt=0, le=60)
+
+
+class InboxDigestConfig(BaseModel):
+    """Periodic "does anything need a reply" scan. See peter/inbox_digest.py.
+
+    Read-only by design — this only ever reports, never drafts or sends.
+    """
+
+    enabled: bool = True
+    poll_interval_minutes: int = Field(default=60, gt=0, le=1440)
+    # Unread messages considered per check. Also the cap for the on-demand
+    # inbox_digest tool.
+    max_emails: int = Field(default=15, gt=0, le=100)
+
+
 class IntegrationsConfig(BaseModel):
     mail: MailConfig = Field(default_factory=MailConfig)
     google: GoogleConfig = Field(default_factory=GoogleConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     briefing: BriefingConfig = Field(default_factory=BriefingConfig)
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
+    meeting_prep: MeetingPrepConfig = Field(default_factory=MeetingPrepConfig)
+    inbox_digest: InboxDigestConfig = Field(default_factory=InboxDigestConfig)
 
 
 # =================================================================== .env

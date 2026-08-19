@@ -22,6 +22,9 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+
+from peter.core.notify import notify
 
 log = logging.getLogger(__name__)
 
@@ -37,16 +40,7 @@ def fire_reminder(text: str) -> None:
 
     log.info("reminder fired: %s", text)
     services().say(f"Reminder: {text}")
-    _notify("Peter — reminder", text)
-
-
-def _notify(title: str, message: str) -> None:
-    try:
-        from plyer import notification
-
-        notification.notify(title=title, message=message, timeout=20)
-    except Exception:  # notifications are a nicety, never a failure path
-        log.debug("desktop notification unavailable", exc_info=True)
+    notify("Peter — reminder", text)
 
 
 class Scheduler:
@@ -118,6 +112,56 @@ class Scheduler:
             func,
             trigger=CronTrigger(hour=hour, minute=minute),
             id=job_id,
+            name=name or job_id,
+            replace_existing=True,
+        )
+        return job.id
+
+    def add_interval_job(
+        self,
+        job_id: str,
+        minutes: float,
+        func: Callable,
+        name: str = "",
+    ) -> str:
+        """Install a named recurring poll job, replacing any previous version.
+
+        Used by the meeting-prep and inbox-digest watchers — both re-check
+        live state (the calendar, the inbox) on a timer rather than being
+        pre-scheduled once, since what they are watching changes underneath
+        them (an event gets moved, new mail arrives).
+        """
+        job = self._scheduler.add_job(
+            func,
+            trigger=IntervalTrigger(minutes=minutes),
+            id=job_id,
+            name=name or job_id,
+            replace_existing=True,
+        )
+        return job.id
+
+    def add_one_off_job(
+        self,
+        job_id: str,
+        when: datetime,
+        func: Callable,
+        args: list | None = None,
+        name: str = "",
+    ) -> str:
+        """Install a named one-off job at an exact time, replacing any
+        previous job under the same id.
+
+        Used for the focus-session restore: `args` is stored in the SQLite
+        jobstore along with everything else, so the restore still fires with
+        the correct saved volume even if Peter gets restarted mid-session —
+        only in-process state (focus_status(), ending it early) would not
+        survive that, not the actual restore.
+        """
+        job = self._scheduler.add_job(
+            func,
+            trigger=DateTrigger(run_date=when),
+            id=job_id,
+            args=args or [],
             name=name or job_id,
             replace_existing=True,
         )

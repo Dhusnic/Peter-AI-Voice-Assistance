@@ -209,6 +209,29 @@ class MemoryStore:
             ).fetchall()
         return [r["summary"] for r in rows]
 
+    def related_note(self, topic: str) -> str | None:
+        """The single most relevant fact or recent episode for `topic`, if any.
+
+        For a proactive nudge (meeting prep, mainly) that wants one short
+        "you mentioned this before" line rather than the full memory block a
+        conversational turn gets injected in its user message.
+        """
+        facts = self.search_facts(topic, limit=1)
+        if facts:
+            return facts[0][1]
+
+        words = {
+            w.lower() for w in _WORD_RE.findall(topic)
+            if len(w) > 2 and w.lower() not in _STOPWORDS
+        }
+        if not words:
+            return None
+        for summary in self.recent_episodes(limit=15):
+            summary_words = {w.lower() for w in _WORD_RE.findall(summary)}
+            if words & summary_words:
+                return summary
+        return None
+
     # ----------------------------------------------------------------- todos
     def add_todo(self, text: str) -> int:
         with self._lock:

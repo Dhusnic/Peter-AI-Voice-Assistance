@@ -16,7 +16,10 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:
+    from rich.console import Console
 
 # Credential *shapes* — these are distinctive enough to match without hitting
 # ordinary prose. Note what is deliberately absent: a pattern for Gmail app
@@ -116,6 +119,7 @@ def configure_logging(
     fmt: str = "rich",
     log_file: Path | None = None,
     secret_literals: Iterable[str] = (),
+    console: "Console | None" = None,
 ) -> None:
     """Install handlers. Safe to call more than once.
 
@@ -123,6 +127,14 @@ def configure_logging(
         secret_literals: This process's actual secret values, scrubbed from
             every record wherever they appear. main.py passes the loaded
             credentials so a stray f-string cannot leak one to disk.
+        console: Text mode's Rich Console, the same one driving the status
+            spinner. Without this, RichHandler opens its own Console — a
+            second writer to the same terminal that Rich's Live display has
+            no way to coordinate with, so a log line lands mid-frame and
+            garbles the spinner. Sharing one Console is what makes Rich
+            suspend-and-redraw around it instead. Voice mode and the one-shot
+            commands (--health, --briefing) have no spinner to collide with,
+            so they simply omit it.
     """
     root = logging.getLogger()
     root.setLevel(level.upper())
@@ -138,7 +150,8 @@ def configure_logging(
         from rich.logging import RichHandler
 
         handler = RichHandler(
-            rich_tracebacks=True, show_path=False, omit_repeated_times=False
+            console=console, rich_tracebacks=True, show_path=False,
+            omit_repeated_times=False,
         )
         handler.setFormatter(logging.Formatter("%(message)s", datefmt="[%X]"))
 

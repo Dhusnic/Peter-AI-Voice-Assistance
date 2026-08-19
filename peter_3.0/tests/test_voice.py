@@ -127,3 +127,24 @@ def test_print_speaker_records_and_never_blocks(capsys):
     assert speaker.is_speaking is False
     assert speaker.wait_until_idle(timeout=0) is True
     assert "Hello there." in capsys.readouterr().out
+
+
+def test_print_speaker_routes_through_a_given_console_as_a_bordered_reply():
+    """Text mode renders a reply in a bordered panel, titled "peter", instead
+    of a bare print — the point being that it renders through the *same*
+    Console driving the status spinner and RichHandler's log output, so Rich
+    can coordinate the three instead of them fighting over one terminal
+    line. A separate, second Console (the old bug here) would not."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False, no_color=True, width=200)
+    speaker = PrintSpeaker(console=console)
+
+    speaker.say("Hello there.")
+
+    output = buffer.getvalue()
+    assert "peter" in output
+    assert "Hello there." in output

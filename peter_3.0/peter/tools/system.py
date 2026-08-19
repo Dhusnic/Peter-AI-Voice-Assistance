@@ -307,17 +307,11 @@ def set_volume(percent: int) -> str:
     Args:
         percent: Target volume from 0 (mute) to 100 (maximum).
     """
-    level = max(0, min(100, int(percent)))
-    try:
-        from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    from peter.integrations.desktop import volume as vol
 
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = interface.QueryInterface(IAudioEndpointVolume)
-        volume.SetMasterVolumeLevelScalar(level / 100.0, None)
-    except Exception as exc:
-        return f"Could not set the volume: {exc}"
+    level = max(0, min(100, int(percent)))
+    if not vol.set(level):
+        return "Could not set the volume."
     return f"Volume set to {level}%."
 
 

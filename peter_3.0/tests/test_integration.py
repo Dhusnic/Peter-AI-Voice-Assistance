@@ -79,12 +79,16 @@ def test_read_tool_reaches_the_real_filesystem(wired):
 
 
 # ------------------------------------------------------------ write-tier path
-def test_write_tool_asks_then_acts(wired):
+def test_routine_write_tool_just_acts(wired):
+    """Most write-tier tools are cheap and reversible, so they run straight
+    away — only the tools in policy.standing_rules (delete, send, run
+    arbitrary commands, ...) still prompt. See test_declining_a_delete_...
+    below for that path."""
     target = wired.tmp / "written.txt"
 
     result = call("write_file", path=str(target), content="hello")
 
-    assert wired.approver.asked, "a write must prompt"
+    assert wired.approver.asked == [], "a routine write must not prompt"
     assert target.read_text(encoding="utf-8") == "hello"
     assert "Wrote" in result
 

@@ -50,6 +50,20 @@ def check_email(limit: int = 10) -> str:
 
 
 @peter_tool(tier="read")
+def inbox_digest() -> str:
+    """Triage unread email: how many, and which ones plausibly need a reply.
+
+    Read-only — this only reports, it never drafts or sends anything. Prefer
+    this over check_email when the user asks something like "what's in my
+    inbox that actually needs me" rather than "list my unread mail".
+    """
+    from peter.inbox_digest import build_digest
+
+    cfg = services().config.integrations.inbox_digest
+    return build_digest(cfg.max_emails).spoken()
+
+
+@peter_tool(tier="read")
 def count_unread_email() -> str:
     """Count unread messages without fetching them. Fast — use it for briefings."""
     count = services().mail().count_unread()

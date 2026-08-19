@@ -284,14 +284,35 @@ class Speaker:
 
 
 class PrintSpeaker:
-    """Stand-in for text mode and tests. Same surface, no audio."""
+    """Stand-in for text mode and tests. Same surface, no audio.
 
-    def __init__(self) -> None:
+    In text mode `console` is the same Rich Console driving the status
+    spinner. Printing through it (rather than bare `print()`) is what keeps a
+    mid-turn announcement — a retry notice, mainly — from corrupting the
+    spinner's line; Rich coordinates the two because they share one console.
+    Left unset, this falls back to plain `print()`, which is all the test
+    suite needs.
+    """
+
+    def __init__(self, console=None) -> None:
         self.spoken: list[str] = []
+        self._console = console
 
     def say(self, text: str) -> None:
         self.spoken.append(text)
-        print(f"\n[peter] {text}\n")
+        if self._console is not None:
+            from rich.panel import Panel
+
+            # A bordered box separates what Peter said from the log lines
+            # around it at a glance — the thing that made a multi-fact answer
+            # ("CPU is X, memory is Y, disk is Z...") read as one grey wall of
+            # text mixed in with INFO/WARNING noise above it.
+            self._console.print(
+                Panel(text, title="peter", title_align="left",
+                      border_style="bright_cyan", padding=(0, 1))
+            )
+        else:
+            print(f"\n[peter] {text}\n")
 
     def stop(self) -> None: ...
 

@@ -47,6 +47,12 @@ log = logging.getLogger(__name__)
 # is better than spending money in a circle.
 MAX_ITERATIONS = 12
 
+# (stage, ToolCall | None) -> None. stage is "thinking" (first call to the
+# model this turn), "continuing" (a later call, after tool results went
+# back), or "tool" (about to run a specific tool call, passed as the second
+# argument). Purely a UI hook — the loop never reads what it returns.
+OnProgress = Callable[[str, "ToolCall | None"], None]
+
 
 @dataclass
 class TurnResult:
@@ -71,6 +77,7 @@ def run_turn(
     retry_base_delay: float = 10.0,
     retry_max_delay: float = 60.0,
     on_retry: OnRetry | None = None,
+    on_progress: OnProgress | None = None,
 ) -> TurnResult:
     """Run one complete turn: send, run tools, repeat until the model finishes.
 
@@ -87,6 +94,8 @@ def run_turn(
     response = None
 
     for iteration in range(1, max_iterations + 1):
+        if on_progress:
+            on_progress("thinking" if iteration == 1 else "continuing", None)
         response = call_with_retry(
             lambda: provider.complete(tools),
             attempts=retry_attempts,
@@ -116,6 +125,8 @@ def run_turn(
         results: list[ToolResult] = []
         for call in response.tool_calls:
             called.append(call.name)
+            if on_progress:
+                on_progress("tool", call)
             results.append(_execute_one(call, execute))
         provider.add_tool_results(results)
 

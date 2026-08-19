@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Callable
 
 from peter.agent import registry
 from peter.agent.prompts import system_prompt
@@ -57,6 +58,11 @@ class Brain:
         # turns into an episode before the provider drops them — see
         # _remember_dropped_turns.
         self._session_turns: list[str] = []
+        # UI hooks, wired up by main.py in text mode for the live status
+        # line. Both stay None in voice mode and in tests — nothing here
+        # requires them to be set.
+        self.progress_hook: Callable[[str, ToolCall | None], None] | None = None
+        self.retry_hook: Callable[[str, int, int, float], None] | None = None
 
     # ------------------------------------------------------------------ public
     @property
@@ -113,6 +119,7 @@ class Brain:
             retry_base_delay=self.config.agent.retry.base_delay_seconds,
             retry_max_delay=self.config.agent.retry.max_delay_seconds,
             on_retry=self._on_retry,
+            on_progress=self.progress_hook,
         )
 
         self.provider.usage.turns += 1
@@ -134,7 +141,9 @@ class Brain:
         )
         total.add(self.provider.usage)
         total.turns += self.provider.usage.turns
-        return total.summary(self.provider.name, self.provider.model)
+        return total.summary(
+            self.provider.name, self.provider.model, self.config.agent.usd_to_inr_rate
+        )
 
     # ----------------------------------------------------------------- private
     def _remember_dropped_turns(self) -> None:
@@ -169,6 +178,8 @@ class Brain:
         text/CLI mode prints it — so this needs no mode-awareness of its own.
         """
         log.warning("provider retry %d/%d after %r", attempt, attempts, error)
+        if self.retry_hook:
+            self.retry_hook(self.provider.name, attempt, attempts, delay)
         services().say(
             f"{self.provider.name} isn't responding (attempt {attempt} of "
             f"{attempts}). Retrying in {delay:.0f} seconds..."

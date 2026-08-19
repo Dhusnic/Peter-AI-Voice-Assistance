@@ -11,18 +11,33 @@ raising an error would end the turn instead of continuing the conversation.
 from __future__ import annotations
 
 import subprocess
+from urllib.parse import urlsplit
 
 from peter.agent.registry import peter_tool
 from peter.core.services import services
 from peter.integrations.desktop import browsers, matching, media, places, youtube
+
+_YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
 
 
 def _desktop():
     return services().config.integrations.desktop
 
 
+def _is_youtube(url: str) -> bool:
+    host = urlsplit(url).netloc.lower().removeprefix("www.")
+    return host in _YOUTUBE_HOSTS or any(host.endswith("." + h) for h in _YOUTUBE_HOSTS)
+
+
 def _open_with_preferred(url: str, new_window: bool = False) -> str:
     cfg = _desktop()
+    # YouTube gets its own browser override (e.g. Brave for video, Firefox
+    # for everything else) so the two don't fight over one browser's tabs.
+    if cfg.youtube_browser and _is_youtube(url):
+        return browsers.open_url(
+            url, browser=cfg.youtube_browser, profile=cfg.youtube_browser_profile,
+            new_window=new_window,
+        )
     return browsers.open_url(
         url, browser=cfg.preferred_browser, profile=cfg.browser_profile,
         new_window=new_window,

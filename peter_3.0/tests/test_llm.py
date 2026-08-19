@@ -966,6 +966,46 @@ def test_loop_executes_tools_and_continues():
     assert provider.results[0][0].content == "six"
 
 
+def test_loop_reports_progress_through_each_stage():
+    """The CLI spinner needs to know: about to ask the model (first time or
+    after tool results), and about to run this specific tool — in order."""
+    provider = FakeProvider([
+        ProviderResponse(
+            tool_calls=[ToolCall(id="1", name="get_time", arguments={"tz": "IST"})],
+            stop_reason=STOP_TOOLS,
+        ),
+        ProviderResponse(text="It is six.", stop_reason=STOP_END),
+    ])
+    events: list[tuple[str, str]] = []
+
+    def on_progress(stage, call):
+        events.append((stage, call.name if call else ""))
+
+    loop.run_turn(provider, [SPEC], "time?", lambda c: "six", on_progress=on_progress)
+
+    assert events == [
+        ("thinking", ""),
+        ("tool", "get_time"),
+        ("continuing", ""),
+    ]
+
+
+def test_loop_progress_tool_event_carries_the_arguments():
+    provider = FakeProvider([
+        ProviderResponse(
+            tool_calls=[ToolCall(id="1", name="open_app", arguments={"name": "Notepad"})],
+            stop_reason=STOP_TOOLS,
+        ),
+        ProviderResponse(text="done", stop_reason=STOP_END),
+    ])
+    seen = []
+    loop.run_turn(
+        provider, [SPEC], "x", lambda c: "ok",
+        on_progress=lambda stage, call: seen.append(call.arguments) if stage == "tool" else None,
+    )
+    assert seen == [{"name": "Notepad"}]
+
+
 def test_loop_resumes_a_paused_turn():
     """A pause treated as 'finished' is a silently truncated answer."""
     provider = FakeProvider([

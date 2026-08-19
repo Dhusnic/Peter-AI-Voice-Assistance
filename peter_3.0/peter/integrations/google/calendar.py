@@ -9,7 +9,7 @@ all-day event (Google represents them with different keys, `dateTime` vs
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 
 from peter.core.config import Config
@@ -28,6 +28,7 @@ class CalendarEvent:
     all_day: bool = False
     location: str = ""
     description: str = ""
+    attendees: list[str] = field(default_factory=list)
 
     def when(self) -> str:
         if self.start is None:
@@ -63,6 +64,18 @@ def _parse_when(node: dict) -> tuple[datetime | None, bool]:
     return (None, False)
 
 
+def _attendees(raw: dict) -> list[str]:
+    """Names of everyone else on the event — not you, not a meeting room."""
+    names = []
+    for entry in raw.get("attendees", None) or []:
+        if entry.get("self") or entry.get("resource"):
+            continue
+        name = entry.get("displayName") or entry.get("email", "").split("@")[0]
+        if name:
+            names.append(name)
+    return names
+
+
 def _to_event(raw: dict) -> CalendarEvent:
     start, all_day = _parse_when(raw.get("start", {}))
     end, _ = _parse_when(raw.get("end", {}))
@@ -74,6 +87,7 @@ def _to_event(raw: dict) -> CalendarEvent:
         all_day=all_day,
         location=raw.get("location", "") or "",
         description=(raw.get("description", "") or "")[:500],
+        attendees=_attendees(raw),
     )
 
 

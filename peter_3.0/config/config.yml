@@ -13,7 +13,7 @@ app:
   user_name: Dhusnic
   assistant_name: Peter
   data_dir: ./data
-  log_level: INFO
+  log_level: ERROR         # DEBUG | INFO | WARNING | ERROR | CRITICAL
   log_format: rich          # rich | json  (json for shipping logs somewhere)
 
 agent:
@@ -100,6 +100,11 @@ agent:
     base_delay_seconds: 10      # delay before retry 1; roughly doubles each time
     max_delay_seconds: 60       # delay never grows past this
 
+  # Every vendor bills in USD; the spoken/CLI usage summary is shown in INR.
+  # No live FX feed — this is a manually maintained rate, update it here
+  # occasionally rather than trusting it to stay exact.
+  usd_to_inr_rate: 88.0
+
   # Model used for cheap/routine background turns regardless of active
   # provider (e.g. summarizing, quick lookups) — always Claude's cheapest,
   # independent of `provider` above.
@@ -156,44 +161,31 @@ policy:
   #   confirm ask first; a refusal returns to Claude as a normal tool result
   #   handoff never run; hand back to the human (money)
   #   deny    never run
+  #
+  # `write` defaults to allow: most write-tier tools (opening an app, playing
+  # a video, creating a calendar event, updating a memory) are cheap and
+  # reversible, and a y/N prompt on every one of them is just friction. Only
+  # the handful of genuinely high-consequence tools below are pulled back to
+  # confirm — the ones that destroy data, run arbitrary commands, or send
+  # something to another person that can't be unsent. `spend` still never
+  # even reaches a prompt; it always hands off to you.
   default_tiers:
     read: allow
-    write: confirm
+    write: allow
     spend: handoff
 
   confirm_timeout_seconds: 45
 
   # Per-tool overrides. These beat the tier default.
   standing_rules:
-    # Cheap and reversible — not worth a prompt.
-    set_reminder: allow
-    set_alarm: allow
-    set_timer: allow
-    add_todo: allow
-    complete_todo: allow
-    cancel_reminder: allow
-    set_clipboard: allow
-    llm_status: allow
-    mark_email_read: allow
-    star_email: allow
-
-    # Browsing is reading. Interacting with a page is not.
-    browse_page: allow
-    check_price: allow
-    browser_status: allow
-    find_on_page: allow
-    take_page_screenshot: allow
-
-    # Destructive or arbitrary. Do not relax without understanding the cost.
+    # Destructive, irreversible, or high blast-radius. Do not relax without
+    # understanding the cost.
     delete_file: confirm
+    delete_email: confirm
+    delete_calendar_event: confirm
     run_powershell: confirm
     lock_workstation: confirm
     send_email: confirm
-    delete_email: confirm
-    delete_calendar_event: confirm
-    browser_click: confirm
-    browser_type: confirm
-    switch_llm_provider: confirm
 
 integrations:
   # Controlling software already installed on this machine: your own browser,
@@ -209,6 +201,12 @@ integrations:
     # Named profile, if you keep more than one. Firefox wants the profile
     # NAME; Chromium wants the directory ("Default", "Profile 1").
     browser_profile: ""
+
+    # YouTube (play_youtube, and "open youtube") opens here instead, so video
+    # doesn't pile up in the browser you use for everything else. Empty
+    # string means no override — falls back to preferred_browser above.
+    youtube_browser: brave
+    youtube_browser_profile: ""
 
     # Gmail addresses accounts positionally (mail.google.com/mail/u/<n>), so
     # this maps what you say onto that index. A full email address also works
@@ -288,3 +286,21 @@ integrations:
       - todos
     max_emails: 5
     max_events: 6
+
+  # Unprompted heads-up shortly before a calendar event: what it is, who's
+  # on it, and — if anything relevant was ever said in a past conversation —
+  # a one-line reminder of it. Polls the calendar rather than pre-scheduling
+  # per event, so a moved or cancelled meeting is picked up automatically.
+  meeting_prep:
+    enabled: true
+    lead_minutes: 10           # how long before the event to speak up
+    poll_interval_minutes: 5   # keep <= lead_minutes or a short gap can hide an event
+
+  # Periodic "does anything in my inbox actually need me" scan. Read-only —
+  # this only ever reports; it never drafts or sends a reply. Classification
+  # is one small model call against sender/subject lines only (not bodies),
+  # using whichever provider is configured above.
+  inbox_digest:
+    enabled: true
+    poll_interval_minutes: 60
+    max_emails: 15

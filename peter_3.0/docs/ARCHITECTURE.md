@@ -75,6 +75,11 @@ flowchart TB
     G --> G2[Writes need a spoken or tray confirmation]
     G --> G3[Spend never auto-executes — hands off to you]
     G --> G4[Append-only audit log of every tool call]
+
+    P --> PR[Proactive]
+    PR --> PR1["Meeting-prep nudge: calendar + memory, unprompted"]
+    PR --> PR2["Inbox digest: what actually needs a reply"]
+    PR --> PR3["Focus mode: mute, time-box, restore, summarize"]
 ```
 
 ### 1.2 What each area means in practice
@@ -89,7 +94,8 @@ flowchart TB
 | **Calendar** | "What's on my calendar tomorrow" | Talks to Google Calendar/Tasks via a narrow OAuth client (sensitive, not restricted, scope — see §2.7). |
 | **Browser** | "Check the price of this laptop on Flipkart" | No official API exists for that site (see README for the full API survey), so Peter drives a real, logged-in Playwright browser instead. It reads the page's own structured product data first (JSON-LD/OpenGraph — what Google Shopping reads), falling back to a screenshot only if that's absent. |
 | **Multi-LLM** | "Switch to Gemini" | The whole conversation's tool-calling loop is vendor-neutral, so switching providers mid-session works without rewriting history — see §2.4. |
-| **Safety** | "Delete this file" → Peter asks first | Every one of the 60 registered tools carries a permission tier baked in at registration. `spend`-class actions (anything that pays money) are not merely "asked about" — the code path to auto-execute them does not exist. |
+| **Safety** | "Delete this file" → Peter asks first | Every one of the 72 registered tools carries a permission tier baked in at registration. `spend`-class actions (anything that pays money) are not merely "asked about" — the code path to auto-execute them does not exist. |
+| **Proactive** | (nothing — that's the point) | "Team meeting in 10 minutes, with Priya and Arjun" fires on its own from a calendar poll. "3 of your 23 unread look like they need a reply" fires from a mail poll. Both are read-only nudges, never actions taken on your behalf — see §2.10. |
 
 ### 1.3 What is deliberately **not** built yet
 
@@ -98,7 +104,7 @@ Being explicit about the boundary matters as much as the feature list:
 - **No autonomous purchase completion.** Peter can fill a cart and reach the payment screen; RBI's mandatory two-factor authentication rules (from 1 April 2026) mean the OTP/UPI PIN step is legally yours, not automatable, so the code has no path that attempts it.
 - **No live transport/seat-availability watchers yet** (Phase 4 — polling jobs for price/seat drops). The browser layer that would power them already exists.
 - **No SMS / phone bridge** (Phase 6 — would need an Android companion app or ADB bridge; Windows has no API into your phone's messages).
-- **No subagent fan-out** (Phase 7 — e.g. "check this product across 5 sites at once" in parallel). The current design is deliberately a single agent loop with ~60 tools, which is simpler to debug and sufficient for now.
+- **No subagent fan-out** (Phase 7 — e.g. "check this product across 5 sites at once" in parallel). The current design is deliberately a single agent loop with ~72 tools, which is simpler to debug and sufficient for now.
 
 ---
 
@@ -351,19 +357,21 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **60 tools currently registered**, split by permission tier:
+- **72 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
-| `system.py` | 7 | 8 | apps, files, clipboard, volume, screenshot, stats, lock, PowerShell |
+| `system.py` | 6 | 9 | apps, files, clipboard, volume, screenshot, stats, lock, PowerShell |
+| `mail_tools.py` | 5 | 5 | read/search/send/star/archive/delete + inbox_digest triage |
 | `time_tools.py` | 3 | 6 | alarms, timers, reminders, to-dos |
-| `mail_tools.py` | 4 | 5 | read/search/send/star/archive/delete |
 | `calendar_tools.py` | 4 | 4 | events + Google Tasks |
 | `browser_tools.py` | 5 | 4 | read/click/type/login on sites with no API |
+| `desktop_tools.py` | 2 | 6 | apps, bookmarks, YouTube, media keys, local folders |
 | `memory_tools.py` | 2 | 4 | facts + preferences |
+| `focus_tools.py` | 1 | 2 | timed mute-and-restore focus sessions |
 | `briefing_tools.py` | 2 | 0 | morning briefing status |
 | `llm_tools.py` | 1 | 1 | switch / inspect provider |
-| **Total** | **28** | **32** | |
+| **Total** | **31** | **41** | |
 
   Notice there is no `spend` tier in this table — see §2.6, that boundary is
   enforced structurally in the browser layer, not by a tool flag that a
@@ -676,6 +684,66 @@ flowchart TD
 
 ---
 
+### 2.10 Proactive features — `peter/meeting_prep.py`, `peter/inbox_digest.py`, `peter/focus.py`
+
+**Job:** speak up without being asked, without ever taking an action that
+matters on your behalf and without becoming a nag once it has already said
+something.
+
+```mermaid
+flowchart TD
+    subgraph MP["Meeting prep — poll every lead_minutes/2"]
+        MPoll["check_meeting_prep()\nlist_events(now, now+lead_minutes)"] --> MDedup{"event.id already\nannounced?"}
+        MDedup -->|no| MNote["memory.related_note(summary + attendees)"]
+        MNote --> MSpeak["say(...) + toast"]
+        MDedup -->|yes| MSkip[skip]
+    end
+
+    subgraph ID["Inbox digest — poll every poll_interval_minutes"]
+        IPoll["check_inbox_digest()\ncount_unread() + list_messages(UNSEEN)"] --> IClassify["one-shot model call:\nsender/subject list -> which need a reply"]
+        IClassify --> IChanged{"unread count changed\nsince last announcement?"}
+        IChanged -->|yes| ISpeak["say(...) + toast"]
+        IChanged -->|no| ISkip[skip — do not nag]
+    end
+
+    subgraph FM["Focus mode — on demand"]
+        FStart["start_focus_session(minutes, label)"] --> FMute["volume.get() -> mute to 0"]
+        FMute --> FSchedule["scheduler.add_one_off_job\nargs=[previous_volume, label, started_at]"]
+        FSchedule -->|timer fires, even after a restart| FRestore["complete_focus_session()\nrestore volume + log episode + say(...)"]
+        FStart -.->|or end_focus_session()| FRestore
+    end
+```
+
+- **Meeting prep and the inbox digest both poll rather than pre-schedule.**
+  A calendar event can be moved or cancelled, and new mail arrives
+  continuously — a job scheduled once, in advance, would be checking a fact
+  that may no longer be true by the time it fires. Polling re-reads the
+  live state every time instead.
+- **Dedup is what keeps "proactive" from becoming "annoying."** Meeting prep
+  remembers which event ids it has already announced (pruned after 24h); the
+  inbox digest remembers the last unread count it spoke and stays quiet
+  until that number actually changes. Both dedup stores are in-process only
+  — lost on a restart, which just risks one repeated nudge, never a missed
+  one.
+- **The inbox digest's classification is a real model call, deliberately
+  small.** A keyword heuristic cannot tell an HR reminder from a production
+  incident; a full conversational turn would cost far more than the task
+  needs. `factory.build_provider()` builds a fresh, tool-free provider
+  against a plain numbered sender/subject list (never message bodies) using
+  whichever vendor is already configured — the same function that builds
+  the main conversation's provider, just pointed at a one-shot prompt
+  instead. On any failure it degrades to reporting the bare unread count,
+  never to drafting or sending anything; it is read-only by construction,
+  not by convention.
+- **Focus mode's restore survives a restart because the value to restore is
+  baked into the scheduled job's own arguments**, in the same persistent
+  SQLite jobstore reminders use (§2.8). The in-process `_active` state that
+  backs `focus_status()` and an early `end_focus_session()` does *not*
+  survive a restart — only the actual system-level restore does, which is
+  the half that actually matters.
+
+---
+
 ## Appendix — file map
 
 ```
@@ -697,13 +765,17 @@ peter_3.0/
 │   ├── policy/
 │   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
 │   │   └── audit.py              # append-only JSONL trail
-│   ├── tools/                   # §2.3 the 60 registered tools
+│   ├── tools/                   # §2.3 the 72 registered tools
 │   ├── memory/store.py          # §2.5 SQLite + FTS5
 │   ├── scheduler/jobs.py        # §2.8 APScheduler + SQLite jobstore
+│   ├── meeting_prep.py          # §2.10 calendar + memory nudge
+│   ├── inbox_digest.py          # §2.10 read-only "needs a reply" scan
+│   ├── focus.py                 # §2.10 mute / time-box / restore
 │   ├── integrations/
 │   │   ├── mail/                 # §2.7 IMAP/SMTP
 │   │   ├── google/               # §2.7 Calendar/Tasks OAuth
-│   │   └── browser/              # §2.6 Playwright + purchase interlock
+│   │   ├── browser/              # §2.6 Playwright + purchase interlock
+│   │   └── desktop/volume.py     # §2.10 pycaw get/set, shared by focus mode
 │   ├── voice/                   # §2.1 wake / stt / tts / audio
 │   └── core/
 │       ├── config.py             # config.yml + .env loader/validator

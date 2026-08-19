@@ -202,7 +202,7 @@ def test_switching_carries_the_running_cost_forward(store, config, monkeypatch):
 
     summary = brain.usage_summary()
     assert brain.usage.input_tokens == 1000
-    assert "$0.05" in summary
+    assert "₹4.40" in summary  # 0.05 USD * config's usd_to_inr_rate (88.0)
 
 
 def test_reset_clears_the_conversation(store, config):
@@ -223,6 +223,40 @@ def test_usage_summary_names_the_provider(store, config):
     summary = brain.usage_summary()
     assert "fake/fake-model" in summary
     assert "turns" in summary
+
+
+# ============================================================== UI progress hooks
+def test_progress_hook_sees_thinking_then_the_tool_by_name(store, config):
+    """Wired up by main.py for the CLI spinner; must stay None-safe when
+    nothing sets it (voice mode, every other test in this file)."""
+    registry.load_all_tools()
+    brain, provider = make_brain(store, config, [
+        ProviderResponse(
+            tool_calls=[ToolCall(id="1", name="get_current_time", arguments={})],
+            stop_reason=STOP_TOOLS,
+        ),
+        ProviderResponse(text="done", stop_reason=STOP_END),
+    ])
+    events = []
+    brain.progress_hook = lambda stage, call: events.append(
+        (stage, call.name if call else "")
+    )
+
+    brain.ask("what time is it")
+
+    assert events == [("thinking", ""), ("tool", "get_current_time"), ("continuing", "")]
+
+
+def test_retry_hook_fires_alongside_the_spoken_retry_announcement(store, config):
+    brain, _ = make_brain(store, config)
+    seen = []
+    brain.retry_hook = lambda provider, attempt, attempts, delay: seen.append(
+        (provider, attempt, attempts, delay)
+    )
+
+    brain._on_retry(2, 5, 10.0, RuntimeError("boom"))
+
+    assert seen == [("fake", 2, 5, 10.0)]
 
 
 # ================================== bounding history without losing context

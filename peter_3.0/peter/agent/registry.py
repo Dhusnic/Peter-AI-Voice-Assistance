@@ -160,6 +160,7 @@ def tool_manifest() -> str:
 TOOL_MODULES = (
     "peter.tools.system",
     "peter.tools.time_tools",
+    "peter.tools.focus_tools",
     "peter.tools.memory_tools",
     "peter.tools.mail_tools",
     "peter.tools.calendar_tools",

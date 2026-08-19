@@ -92,12 +92,12 @@ class Usage:
         self.cache_write += other.cache_write
         self.cost_usd += other.cost_usd
 
-    def summary(self, provider: str = "", model: str = "") -> str:
+    def summary(self, provider: str = "", model: str = "", usd_to_inr: float = 88.0) -> str:
         where = f"{provider}/{model} | " if provider else ""
         return (
             f"{where}{self.turns} turns | in {self.input_tokens:,} "
             f"(cache r{self.cache_read:,}/w{self.cache_write:,}) "
-            f"out {self.output_tokens:,} | ~${self.cost_usd:.4f}"
+            f"out {self.output_tokens:,} | ~₹{self.cost_usd * usd_to_inr:.2f}"
         )
 
 
