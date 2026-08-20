@@ -13,7 +13,7 @@ mic ─▶ openWakeWord ─▶ faster-whisper ─▶  LLM  ─▶ Piper ─▶ s
  CLI ────────────────────────────────────▶ │ ◀──────────── Telegram
                               Claude · GPT · Gemini
                                            │
-                                     policy gate ──▶ 138 tools
+                                     policy gate ──▶ 146 tools
                                            │               │
                                      audit log       ┌─────┴───────────────┐
                                                      │                     │
@@ -364,7 +364,7 @@ Three rules:
 | [peter/integrations/browser/](peter/integrations/browser/) | Playwright session, extraction, rate limiting, bot detection |
 | [.../browser/interlock.py](peter/integrations/browser/interlock.py) | Refuses any click that commits money |
 | [peter/briefing.py](peter/briefing.py) | The daily briefing, assembled section by section |
-| [peter/tools/](peter/tools/) | The 138 tools themselves, grouped into skills |
+| [peter/tools/](peter/tools/) | The 146 tools themselves, grouped into skills |
 | [peter/voice/](peter/voice/) | Mic, wake word, Whisper, TTS |
 | [peter/main.py](peter/main.py) | Wiring, CLI, and the turn loop |
 

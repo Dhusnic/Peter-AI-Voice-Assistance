@@ -144,7 +144,7 @@ with a message naming the field, rather than three hours later inside a tool.
 <a name="4-what-peter-can-do"></a>
 ## 4. What Peter can do
 
-138 tools across 22 areas. You never name a tool — you say what you want and
+146 tools across 28 areas. You never name a tool — you say what you want and
 Peter picks. The examples below are things you can say verbatim.
 
 <a name="41-your-machine"></a>
@@ -215,6 +215,68 @@ Three kinds, used differently:
 - **Preferences** — how Peter should behave. Always injected.
 - **Episodes** — rolling summaries. Written automatically by focus sessions,
   meeting notes, the daily work log, and by conversations ageing out of context.
+
+**Peter also learns when you correct him.** You do not have to say "remember
+this" — if you tell him he got something wrong and explain what you actually
+meant, he works out whether there is a lasting rule in it:
+
+> you: *"summarise my inbox"*
+> peter: *(five paragraphs)*
+> you: *"no, always keep it to two sentences"*
+> peter: *"...Noted — Keep replies to two sentences."*
+
+From then on that applies to every conversation. It works for vocabulary too:
+*"when I say the usual I mean filter coffee, no sugar"* is stored as a fact,
+so "order the usual" means the right thing afterwards.
+
+Three things worth knowing about how it behaves:
+
+- **It ignores one-offs on purpose.** "Set a 5pm reminder" → "no, make it 6pm"
+  is you changing your mind, not a rule, and Peter is built to say nothing
+  rather than conclude every reminder should be at 6pm. Most corrections
+  teach nothing durable, and that is the expected outcome — if you *want*
+  something remembered, phrasing it as a general rule ("always...", "from now
+  on...", "when I say...") is what makes it stick.
+- **It tells you what it learned**, in the reply. Ask *"list my preferences"*
+  any time to see everything in effect, and *"forget the preference X"* to
+  drop one.
+- **It never quietly deletes an old rule to make room for a new one.** There
+  is a cap (25 preferences by default); once it is reached Peter says the list
+  is full and asks you to forget one, rather than silently dropping something
+  you set deliberately.
+
+To turn any of this off, see `agent.learning` in `config.yml`.
+
+**Peter can search memory by meaning, not just by keyword.** Off by default
+until you run a one-off download:
+
+```
+.venv\Scripts\python.exe -m peter.main --download-embeddings
+```
+
+That fetches a ~23MB model and indexes everything already stored. Without it,
+memory falls back to keyword search and nothing breaks — but keyword search
+only finds a fact if you happen to reuse the words you stored it with. Asking
+*"how do I get to work"* would not find *"takes route 70 bus to Gandhipuram"*,
+because the two share no words. Measured across ten such questions, keyword
+search found 3; with the model it found all 10.
+
+It runs entirely on your machine — nothing about your memory is sent anywhere,
+the same as the wake word. It also makes replies slightly cheaper, because
+Peter stops padding every turn with facts that were not relevant.
+
+Preferences additionally have a **scope**:
+
+- `always` (the default) — injected on every turn. Right for anything about
+  how Peter should behave: reply length, tone, units.
+- `contextual` — only brought in when the turn is actually about it. Right for
+  things like *"prefer Amazon over Flipkart"*, which is irrelevant to most
+  conversations.
+
+Anything stored before this existed stays `always`, so nothing you already set
+changed behaviour. If Peter seems to have forgotten a preference, check
+`similarity_threshold` under `memory.embeddings` in `config.yml` — or set that
+preference back to `always`.
 
 <a name="45-email"></a>
 ### 4.5 Email
@@ -803,13 +865,17 @@ token that **expires every 7 days**. An app password does not expire.
    ```
 
 <a name="73-calendar-and-tasks"></a>
-### 7.3 Calendar and tasks — 10 minutes
+### 7.3 Calendar, tasks, contacts and Drive — 10 minutes
+
+One OAuth client covers all four — Calendar, Tasks, read-only Contacts, and
+read-only Drive.
 
 1. **console.cloud.google.com** → APIs & Services → Credentials →
    Create credentials → OAuth client ID → **Desktop app**.
-2. Enable the **Google Calendar API** and **Google Tasks API** for the project.
+2. Enable the **Google Calendar API**, **Google Tasks API**, **People API**,
+   and **Google Drive API** for the project.
 3. Set the OAuth consent screen to **In Production**. In "Testing" status Google
-   expires your refresh token after 7 days. Calendar and Tasks scopes are only
+   expires your refresh token after 7 days. All four scopes are only
    *sensitive*, not *restricted*, so this needs no security audit — you will see
    an "unverified app" warning once, which you can click through.
 4. Put the client id and secret in `.env`.
@@ -817,6 +883,16 @@ token that **expires every 7 days**. An app password does not expire.
    ```powershell
    .venv\Scripts\python.exe -m peter.main --google-auth
    ```
+
+**Already set this up before Contacts/Drive existed?** Your stored token
+still covers Calendar/Tasks fine, but a Contacts or Drive call will fail
+with "Google rejected the request (403)" until you re-run step 5 above —
+the token needs a fresh consent to pick up the two new scopes. Enable the
+People API and Drive API in the console first if you haven't.
+
+Once authorised: *"find Ancy's number"* resolves a saved contact to a real
+phone/email so `send_email`/`make_phone_call` can use it — see
+[§7.6](#76-documents) for pointing Peter at a Drive folder to search.
 
 <a name="74-dev-tools"></a>
 ### 7.4 Dev tools — 1 minute
@@ -906,7 +982,7 @@ phone's IP moved (Settings → About → Status) and update `wireless_address`
 — or set a DHCP reservation on your router so it never changes.
 
 <a name="76-documents"></a>
-### 7.6 Documents — 1 minute
+### 7.6 Documents (local folders and Google Drive) — 1 minute
 
 ```yaml
 integrations:
@@ -914,9 +990,20 @@ integrations:
     folders:
       - D:/notes
       - D:/work/specs
+    drive_folder_id: ""    # see below
 ```
 
 Or index on demand: *"index D:/notes"*.
+
+**Google Drive** shares the same search — `search_docs`/`ask_docs` don't
+care whether a passage came from a local file or Drive. Needs the
+`drive.readonly` scope from [§7.3](#73-calendar-and-tasks) (on by default;
+re-authorise if you set this up before Drive support existed). Find a
+folder's id in its URL — the part after `/folders/` — and either set
+`drive_folder_id` in config.yml or say *"index Drive folder \<id\>"*. Not
+recursive: only files directly inside that one folder. Google Docs/Sheets/
+Slides are exported to text automatically; everything else needs a matching
+extension in `integrations.docs.extensions`, same allowlist local files use.
 
 <a name="77-the-browser"></a>
 ### 7.7 The browser — once per site
@@ -978,6 +1065,51 @@ No routines are offered at all until at least one is defined here.
 News and notes need nothing beyond `integrations.news.enabled` /
 `integrations.notes.enabled`, both `true` by default — no separate setup step.
 
+<a name="710-google-keep"></a>
+### 7.10 Google Keep — read this before turning it on
+
+**This is not like any other Google integration in this manual.** Calendar,
+Tasks, Contacts and Drive all use a scoped OAuth grant — you can see exactly
+what it allows, and revoke it any time from myaccount.google.com without
+touching your password. Keep has no such option: **there is no official Keep
+API for a personal Gmail account.** The real one exists only for Google
+Workspace (paid business/education) accounts, gated behind an admin granting
+domain-wide delegation — not something a personal `@gmail.com` address can
+ever obtain.
+
+The only way to reach Keep at all is [gkeepapi](https://github.com/kiwiz/gkeepapi),
+an unofficial client that authenticates with a **master token** — the same
+capability as your Google account password, not a scoped, individually
+revocable grant. If that token leaks, whoever has it can act as you across
+Google, not just in Keep. This is also technically against Google's Terms of
+Service, and Google could break gkeepapi at any time by changing something
+internally, with no warning.
+
+Weigh that before continuing. If you're comfortable with it:
+
+1. Set `integrations.keep.enabled: true` in `config/config.yml` — it defaults
+   to `false` specifically so nothing attempts this without you opting in on
+   purpose.
+2. Obtain a master token by following gkeepapi's own documented method —
+   github.com/kiwiz/gkeepapi. Peter does not do this step for you: automating
+   a Google sign-in for an unofficial client is a worse idea than doing it
+   once yourself.
+3. Put both in `.env`:
+   ```
+   GOOGLE_KEEP_EMAIL=you@gmail.com
+   GOOGLE_KEEP_MASTER_TOKEN=<the token from step 2>
+   ```
+4. Check with `--health`, or just try *"list my Keep notes"*.
+
+**If it stops working later** — most likely the token was revoked (you
+changed your Google password, or Google flagged the unofficial sign-in) —
+Peter reports it plainly ("Google Keep sign-in failed...") rather than
+silently going quiet, and the fix is generating a fresh token and updating
+`.env`.
+
+**To turn it off again**, set `integrations.keep.enabled: false`, or just
+remove the two `.env` values — either one is enough.
+
 ---
 
 <a name="8-command-line-reference"></a>
@@ -999,6 +1131,7 @@ News and notes need nothing beyond `integrations.news.enabled` /
 | `--briefing` | Print today's briefing and exit |
 | `--perf-report` | Print per-tool timing stats (last 7 days) and exit |
 | `--skill-list` | Print every skill and its usable/not-configured status and exit |
+| `--download-embeddings` | Fetch the semantic-memory model (~23MB), index existing memories, exit |
 
 `--health` is the first thing to run when anything seems wrong. It reports every
 subsystem, distinguishing **disabled** (you turned it off), **not configured**
@@ -1009,7 +1142,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 <a name="9-complete-tool-reference"></a>
 ## 9. Complete tool reference
 
-138 tools. `[r]` read, `[w]` write, `[!]` always confirms.
+146 tools. `[r]` read, `[w]` write, `[!]` always confirms.
 
 **System** — `open_app` [w] · `list_files` [r] · `read_file` [r] ·
 `search_files` [r] · `write_file` [w] · `delete_file` [!] · `move_file` [w] ·
@@ -1036,6 +1169,12 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 `next_event` [r] · `create_calendar_event` [w] · `delete_calendar_event` [!] ·
 `add_google_task` [w] · `list_google_tasks` [r] · `complete_google_task` [w]
 
+**Google Contacts** — `find_google_contact` [r]
+
+**Google Keep** *(off by default — [§7.10](#710-google-keep))* —
+`list_keep_notes` [r] · `search_keep_notes` [r] · `create_keep_note` [w] ·
+`pin_keep_note` [w] · `archive_keep_note` [w] · `delete_keep_note` [w]
+
 **Briefing** — `daily_briefing` [r] · `briefing_schedule` [r]
 
 **Browser** — `browse_page` [r] · `check_price` [r] ·
@@ -1056,8 +1195,9 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 **Development** — `list_repos` [r] · `git_status` [r] · `recent_commits` [r] ·
 `my_pull_requests` [r] · `ci_status` [r] · `work_log` [r] · `standup_notes` [r]
 
-**Documents** — `index_folder` [w] · `search_docs` [r] · `ask_docs` [r] ·
-`docs_index_status` [r] · `forget_folder` [w]
+**Documents** — `index_folder` [w] · `index_drive_folder` [w] ·
+`search_docs` [r] · `ask_docs` [r] · `docs_index_status` [r] ·
+`forget_folder` [w]
 
 **Workspaces** — `save_workspace` [w] · `restore_workspace` [w] ·
 `list_workspaces` [r] · `delete_workspace` [w]
@@ -1116,6 +1256,15 @@ the venv first. This is the most common problem by a wide margin.
 **Google stopped working after a week**
 Your OAuth consent screen is still in "Testing" status, which expires refresh
 tokens after 7 days. Set it to "In Production" — see [§7.3](#73-calendar-and-tasks).
+
+**"Google rejected the request (403)" on a contact lookup or Drive search**
+Not the 7-day expiry above — this is a token authorised before Contacts/Drive
+scopes existed. Re-run `--google-auth` once; see [§7.3](#73-calendar-and-tasks).
+
+**"Google Keep sign-in failed"**
+The master token is wrong, expired, or was revoked (often by changing your
+Google password, which invalidates it). Generate a fresh one and update
+`GOOGLE_KEEP_MASTER_TOKEN` in `.env` — see [§7.10](#710-google-keep).
 
 **The wake word is "hey jarvis", not "hey Peter"**
 openWakeWord ships four pre-trained models (`alexa`, `hey_mycroft`,
@@ -1289,6 +1438,14 @@ you note down, never leave this machine at all — those are local SQLite
 tables, same as everything else in that first list. A routine never adds a
 network call of its own — it only runs tools that already exist, so its
 privacy profile is exactly the sum of whichever tools you put in it.
+
+**Google Keep is a different case from every other integration on this
+page**, worth its own line: Contacts and Drive use a scoped OAuth grant, the
+same shape as Calendar/Tasks/Mail — you can see exactly what it allows and
+revoke it independently of your password at any time. Keep, being
+unofficial, authenticates with a master token instead: full account-wide
+capability, revocable only by changing your Google password outright. See
+[§7.10](#710-google-keep) before enabling it.
 
 What is sent to Telegram, if you enable it: your messages to Peter, Peter's
 replies, and mirrored proactive announcements.

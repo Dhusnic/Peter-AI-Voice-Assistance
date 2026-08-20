@@ -81,6 +81,9 @@ class Brain:
         # Set once the daily cap has been mentioned, so a `warn` budget says
         # something the first time it is passed and not on every turn after.
         self._budget_warned = False
+        # The previous (user_text, reply) pair, so a turn that reads like a
+        # correction has something to be a correction *of*. See _learn().
+        self._last_exchange: tuple[str, str] | None = None
 
     # ------------------------------------------------------------------ public
     @property
@@ -147,11 +150,42 @@ class Brain:
 
         self.provider.usage.turns += 1
         self._record_spend(before)
+
+        spoken = result.text
+        note = self._learn(user_text)
+        if note:
+            spoken = f"{spoken} {note}".strip()
+        # Stored without the announcement: what the user is correcting is the
+        # answer they actually got, not Peter's note about having learned.
+        self._last_exchange = (user_text, result.text)
+
         return TurnResult(
-            text=result.text,
+            text=spoken,
             tool_calls=result.tool_calls,
             stop_reason=result.stop_reason,
         )
+
+    def _learn(self, user_text: str) -> str | None:
+        """If this turn corrected the previous one, try to turn that into a
+        standing rule. Returns a short announcement, or None.
+
+        Runs after the answer is already in hand, so a slow or failing
+        extraction delays nothing the user is waiting on except the note
+        itself — and only on a turn that reads like a correction, which the
+        keyword pre-filter settles without a model call.
+        """
+        if self._last_exchange is None:
+            return None
+        previous_user, previous_reply = self._last_exchange
+        try:
+            from peter.agent import learning
+
+            return learning.learn_from_correction(
+                self.memory, previous_user, previous_reply, user_text, self.config
+            )
+        except Exception:  # pragma: no cover - learning must never break a turn
+            log.debug("learning failed", exc_info=True)
+            return None
 
     def _turn_tools(self, user_text: str):
         """The tool list for this turn — the full registry, unless

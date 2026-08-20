@@ -521,3 +521,196 @@ def test_simple_namespace_config_is_enough_to_construct(tmp_path):
         assert index.stats()["files"] == 0
     finally:
         index.close()
+
+
+# --------------------------------------------------------------------- drive
+# Same faked-chained-call approach test_contacts.py uses for the People API:
+# plain objects mirroring exactly the shape index_drive_folder() calls
+# (files().list/export/get_media().execute()), monkeypatched in at the one
+# place it's imported (peter.integrations.google.auth.build_service) — no
+# real network access anywhere in this file.
+
+class _FakeDriveRequest:
+    def __init__(self, result=None, exc=None):
+        self._result = result
+        self._exc = exc
+
+    def execute(self):
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+
+class _FakeDriveFiles:
+    def __init__(self, pages=None, exports=None, media=None, list_exc=None):
+        self.pages = list(pages or [{"files": []}])
+        self.exports = exports or {}
+        self.media = media or {}
+        self.list_exc = list_exc
+        self.list_calls: list[dict] = []
+
+    def list(self, **kwargs):
+        self.list_calls.append(kwargs)
+        if self.list_exc is not None:
+            return _FakeDriveRequest(exc=self.list_exc)
+        page = self.pages.pop(0) if self.pages else {"files": []}
+        return _FakeDriveRequest(page)
+
+    def export(self, fileId, mimeType):  # noqa: N803 - matches googleapiclient's own naming
+        return _FakeDriveRequest(self.exports.get(fileId, b""))
+
+    def get_media(self, fileId):  # noqa: N803
+        return _FakeDriveRequest(self.media.get(fileId, b""))
+
+
+class _FakeDriveService:
+    def __init__(self, **kwargs):
+        self._files = _FakeDriveFiles(**kwargs)
+
+    def files(self):
+        return self._files
+
+
+def _drive(monkeypatch, **kwargs) -> _FakeDriveService:
+    service = _FakeDriveService(**kwargs)
+    monkeypatch.setattr(
+        "peter.integrations.google.auth.build_service", lambda *a, **k: service
+    )
+    return service
+
+
+def _http_error(status: int):
+    from googleapiclient.errors import HttpError
+
+    resp = type("Resp", (), {"status": status, "reason": "error"})()
+    return HttpError(resp, b"error body")
+
+
+def test_drive_exports_a_google_doc_as_text(index, monkeypatch, config):
+    _drive(monkeypatch, pages=[{"files": [
+        {"id": "f1", "name": "Meeting notes",
+         "mimeType": "application/vnd.google-apps.document",
+         "modifiedTime": "2026-01-01T00:00:00.000Z"},
+    ]}], exports={"f1": b"Decisions and owners from the meeting."})
+
+    result = index.index_drive_folder("folder123", config)
+
+    assert result.files == 1
+    hits = index.search("decisions owners")
+    assert hits and hits[0].name == "Meeting notes"
+
+
+def test_drive_downloads_a_plain_text_file(index, monkeypatch, config):
+    _drive(monkeypatch, pages=[{"files": [
+        {"id": "f2", "name": "readme.md", "mimeType": "text/markdown",
+         "modifiedTime": "2026-01-01T00:00:00.000Z"},
+    ]}], media={"f2": b"# Setup\n\nRun the installer as administrator."})
+
+    result = index.index_drive_folder("folder123", config)
+
+    assert result.files == 1
+    hits = index.search("installer administrator")
+    assert hits and hits[0].name == "readme.md"
+
+
+def test_drive_skips_a_file_type_not_in_the_allowlist(index, monkeypatch, config):
+    _drive(monkeypatch, pages=[{"files": [
+        {"id": "f3", "name": "photo.png", "mimeType": "image/png",
+         "modifiedTime": "2026-01-01T00:00:00.000Z"},
+    ]}])
+
+    result = index.index_drive_folder("folder123", config)
+
+    assert result.files == 0
+    assert result.skipped == 1
+
+
+def test_drive_reindex_skips_an_unchanged_file(index, monkeypatch, config):
+    meta = {"id": "f1", "name": "Notes", "mimeType": "application/vnd.google-apps.document",
+            "modifiedTime": "2026-01-01T00:00:00.000Z"}
+    _drive(monkeypatch, pages=[{"files": [meta]}], exports={"f1": b"first version"})
+    index.index_drive_folder("folder123", config)
+
+    _drive(monkeypatch, pages=[{"files": [meta]}], exports={"f1": b"first version"})
+    result = index.index_drive_folder("folder123", config)
+
+    assert result.unchanged == 1
+    assert result.files == 0
+
+
+def test_drive_reindexes_when_modified_time_changes(index, monkeypatch, config):
+    meta = {"id": "f1", "name": "Notes", "mimeType": "application/vnd.google-apps.document",
+            "modifiedTime": "2026-01-01T00:00:00.000Z"}
+    _drive(monkeypatch, pages=[{"files": [meta]}], exports={"f1": b"first version"})
+    index.index_drive_folder("folder123", config)
+
+    updated = dict(meta, modifiedTime="2026-02-01T00:00:00.000Z")
+    _drive(monkeypatch, pages=[{"files": [updated]}], exports={"f1": b"second version"})
+    result = index.index_drive_folder("folder123", config)
+
+    assert result.files == 1
+    hits = index.search("second version")
+    assert hits
+
+
+def test_drive_paginates(index, monkeypatch, config):
+    page1 = {"files": [{"id": "f1", "name": "one.txt", "mimeType": "text/plain",
+                         "modifiedTime": "2026-01-01T00:00:00.000Z"}],
+             "nextPageToken": "p2"}
+    page2 = {"files": [{"id": "f2", "name": "two.txt", "mimeType": "text/plain",
+                         "modifiedTime": "2026-01-01T00:00:00.000Z"}]}
+    service = _drive(monkeypatch, pages=[page1, page2],
+                      media={"f1": b"first document body", "f2": b"second document body"})
+
+    result = index.index_drive_folder("folder123", config)
+
+    assert result.files == 2
+    assert service._files.list_calls[1]["pageToken"] == "p2"
+
+
+def test_drive_403_becomes_auth_error(index, monkeypatch, config):
+    from peter.core.errors import AuthError
+
+    _drive(monkeypatch, list_exc=_http_error(403))
+    with pytest.raises(AuthError) as excinfo:
+        index.index_drive_folder("folder123", config)
+    assert "google-auth" in excinfo.value.user_action
+
+
+def test_drive_files_are_stored_under_the_google_drive_label(index, monkeypatch, config):
+    _drive(monkeypatch, pages=[{"files": [
+        {"id": "f1", "name": "Notes", "mimeType": "application/vnd.google-apps.document",
+         "modifiedTime": "2026-01-01T00:00:00.000Z"},
+    ]}], exports={"f1": b"drive content"})
+
+    index.index_drive_folder("folder123", config)
+
+    assert "Google Drive" in index.stats()["folders"]
+
+
+def test_forgetting_google_drive_removes_only_drive_files(index, notes, monkeypatch, config):
+    index.index_folder(notes)
+    _drive(monkeypatch, pages=[{"files": [
+        {"id": "f1", "name": "Notes", "mimeType": "application/vnd.google-apps.document",
+         "modifiedTime": "2026-01-01T00:00:00.000Z"},
+    ]}], exports={"f1": b"drive content"})
+    index.index_drive_folder("folder123", config)
+    assert index.stats()["files"] == 3
+
+    removed = index.forget("Google Drive")
+
+    assert removed == 1
+    assert index.stats()["files"] == 2
+    assert "Google Drive" not in index.stats()["folders"]
+
+
+def test_index_drive_folder_requires_a_folder_id(index, config):
+    with pytest.raises(ValueError):
+        index.index_drive_folder("", config)
+
+
+# -------------------------------------------------------------------- tool
+def test_index_drive_folder_tool_rejects_empty_id():
+    from peter.tools.docs_tools import index_drive_folder
+
+    assert "Give a Drive folder id" in index_drive_folder(folder_id="")

@@ -9,6 +9,7 @@
     python -m peter.main --telegram-setup  find your Telegram chat id
     python -m peter.main --perf-report   print per-tool timing stats and exit
     python -m peter.main --skill-list    print every skill and its status and exit
+    python -m peter.main --download-embeddings  enable semantic memory search
 
 Two things this does that peter_1.0 did not:
 
@@ -53,6 +54,32 @@ from peter.worklog import schedule_worklog
 log = logging.getLogger("peter")
 
 
+def _build_embedder(config: Config):
+    """The semantic-search embedder, or None.
+
+    Returns None rather than raising when the model has not been downloaded:
+    the store treats that as "use keyword search", which is exactly what it
+    did before this existed. Nothing about starting Peter should depend on a
+    ~23MB optional file being present.
+    """
+    if not config.memory.embeddings.enabled:
+        return None
+    try:
+        from peter.memory.embeddings import Embedder
+
+        embedder = Embedder(config.embeddings_dir)
+        if not embedder.files_present():
+            log.info(
+                "semantic memory search is off (no model yet) — run "
+                "`python -m peter.main --download-embeddings` to enable it"
+            )
+            return None
+        return embedder
+    except Exception:
+        log.warning("could not set up embeddings; using keyword search", exc_info=True)
+        return None
+
+
 class Peter:
     """Owns every long-lived object and the turn loop."""
 
@@ -66,7 +93,9 @@ class Peter:
         registry.load_all_tools(config=config)
 
         self.container = ServiceContainer(config)
-        self.container.memory = MemoryStore(config.db_path)
+        self.container.memory = MemoryStore(
+            config.db_path, embedder=_build_embedder(config)
+        )
         self.container.audit = AuditLog(config.audit_path)
         self.container.perf = PerfLog(config.db_path)
         self.container.scheduler = Scheduler(config.db_path)
@@ -397,7 +426,7 @@ def _cmd_devices() -> int:
 def _cmd_health(config: Config) -> int:
     registry.load_all_tools(config=config)
     container = ServiceContainer(config)
-    container.memory = MemoryStore(config.db_path)
+    container.memory = MemoryStore(config.db_path, embedder=_build_embedder(config))
     container.scheduler = Scheduler(config.db_path)
     set_container(container)
 
@@ -488,7 +517,7 @@ def _cmd_telegram_setup(config: Config) -> int:
 def _cmd_briefing(config: Config) -> int:
     registry.load_all_tools(config=config)
     container = ServiceContainer(config)
-    container.memory = MemoryStore(config.db_path)
+    container.memory = MemoryStore(config.db_path, embedder=_build_embedder(config))
     container.scheduler = Scheduler(config.db_path)
     set_container(container)
     print()
@@ -496,6 +525,39 @@ def _cmd_briefing(config: Config) -> int:
     print()
     container.close()
     set_container(None)
+    return 0
+
+
+def _cmd_download_embeddings(config: Config) -> int:
+    """Fetch the sentence-embedding model, then index what is already stored.
+
+    Re-indexing here rather than lazily on the next turn is deliberate: the
+    facts saved before today have no vectors, and without a backfill the
+    feature would appear to work while silently missing everything Peter
+    already knew about you.
+    """
+    from peter.memory.embeddings import Embedder, download
+    from peter.memory.store import MemoryStore
+
+    try:
+        download(config.embeddings_dir)
+    except Exception as exc:
+        log.error("could not download the embedding model: %s", exc)
+        print(
+            f"\nDownload failed: {exc}\n"
+            "Semantic search stays off; keyword search is unaffected.\n"
+        )
+        return 1
+
+    store = MemoryStore(config.db_path, embedder=Embedder(config.embeddings_dir))
+    try:
+        indexed = store.reindex_embeddings()
+    finally:
+        store.close()
+    print(
+        f"\nSemantic memory search is ready. "
+        f"Indexed {indexed} existing memories.\n"
+    )
     return 0
 
 
@@ -554,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="print per-tool timing stats (last 7 days) and exit")
     parser.add_argument("--skill-list", action="store_true",
                         help="print every skill and its status and exit")
+    parser.add_argument("--download-embeddings", action="store_true",
+                        help="fetch the semantic-memory model (~23MB) and exit")
     args = parser.parse_args(argv)
 
     # Windows consoles default to cp1252, which cannot encode a rupee sign or
@@ -607,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_perf_report(config)
     if args.skill_list:
         return _cmd_skill_list(config)
+    if args.download_embeddings:
+        return _cmd_download_embeddings(config)
 
     if not config.secrets.any_llm_key:
         log.error(

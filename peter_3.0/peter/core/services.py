@@ -24,6 +24,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from peter.docs_index import DocIndex
     from peter.integrations.browser.manager import BrowserManager
     from peter.integrations.google.calendar import CalendarClient
+    from peter.integrations.google.contacts import ContactsClient
+    from peter.integrations.google.keep import KeepClient
     from peter.integrations.google.tasks import TasksClient
     from peter.integrations.mail.client import MailClient
     from peter.memory.store import MemoryStore
@@ -58,6 +60,8 @@ class ServiceContainer:
         self._mail: Optional["MailClient"] = None
         self._calendar: Optional["CalendarClient"] = None
         self._tasks: Optional["TasksClient"] = None
+        self._contacts: Optional["ContactsClient"] = None
+        self._keep: Optional["KeepClient"] = None
         self._browser: Optional["BrowserManager"] = None
 
         # Lazy — local SQLite stores, one per feature that needs to remember
@@ -208,6 +212,24 @@ class ServiceContainer:
                 self._notes = NoteStore(self.config.db_path)
         return self._notes
 
+    def contacts(self) -> "ContactsClient":
+        self._require_google()
+        with self._lock:
+            if self._contacts is None:
+                from peter.integrations.google.contacts import ContactsClient
+
+                self._contacts = ContactsClient(self.config)
+        return self._contacts
+
+    def keep(self) -> "KeepClient":
+        self._require_keep()
+        with self._lock:
+            if self._keep is None:
+                from peter.integrations.google.keep import KeepClient
+
+                self._keep = KeepClient(self.config)
+        return self._keep
+
     def _require_google(self) -> None:
         cfg = self.config.integrations.google
         if not cfg.enabled:
@@ -219,6 +241,22 @@ class ServiceContainer:
                 "google",
                 "Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in "
                 ".env, then run: python -m peter.main --google-auth",
+            )
+
+    def _require_keep(self) -> None:
+        cfg = self.config.integrations.keep
+        if not cfg.enabled:
+            raise NotConfiguredError(
+                "keep",
+                "Set integrations.keep.enabled to true in config.yml — read "
+                "the setup section in docs/USER_MANUAL.md first, this "
+                "authenticates differently from every other integration.",
+            )
+        if not self.config.secrets.has_keep:
+            raise NotConfiguredError(
+                "keep",
+                "Set GOOGLE_KEEP_EMAIL and GOOGLE_KEEP_MASTER_TOKEN in .env. "
+                "See docs/USER_MANUAL.md for how to obtain the token.",
             )
 
     # ---------------------------------------------------------- lifecycle

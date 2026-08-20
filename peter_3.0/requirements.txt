@@ -35,11 +35,17 @@ piper-tts>=1.2.0
 edge-tts>=6.1.0
 pyttsx3>=2.90
 
-# --- Google Calendar + Tasks ---
+# --- Google Calendar + Tasks + Contacts + Drive (all proper OAuth) ---
 google-api-python-client>=2.100
 google-auth>=2.30
 google-auth-oauthlib>=1.2
 google-auth-httplib2>=0.2
+
+# --- Google Keep (unofficial, optional, off by default) ---
+# Not OAuth — authenticates with a master token, not a scoped grant. See
+# peter/integrations/google/keep.py and docs/USER_MANUAL.md before enabling
+# integrations.keep. Only imported if integrations.keep.enabled is true.
+gkeepapi>=0.16
 
 # --- Email (IMAP/SMTP are stdlib; this renders HTML bodies to speakable text) ---
 html2text>=2024.2.26

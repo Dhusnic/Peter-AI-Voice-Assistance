@@ -227,7 +227,7 @@ flowchart LR
 | **Calendar** | "What's on my calendar tomorrow" | Talks to Google Calendar/Tasks via a narrow OAuth client (sensitive, not restricted, scope — see §2.7). |
 | **Browser** | "Check the price of this laptop on Flipkart" | No official API exists for that site (see README for the full API survey), so Peter drives a real, logged-in Playwright browser instead. It reads the page's own structured product data first (JSON-LD/OpenGraph — what Google Shopping reads), falling back to a screenshot only if that's absent. |
 | **Multi-LLM** | "Switch to Gemini" | The whole conversation's tool-calling loop is vendor-neutral, so switching providers mid-session works without rewriting history — see §2.2.2. When Gemini is set to `auto` (this deployment's default), each turn's own text picks a cheap or a strong model with no extra API call — see §2.2.4. |
-| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 138 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
+| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 146 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
 | **Proactive** | (nothing — that's the point) | "Team meeting in 10 minutes, with Priya and Arjun" fires on its own from a calendar poll. "3 of your 23 unread look like they need a reply" fires from a mail poll. Both are read-only nudges, never actions taken on your behalf — see §2.10. |
 | **Phone** | (from Telegram) "what's on my calendar tomorrow" | The same brain, tools, memory and permission gate, reached over the Telegram Bot API — and every proactive nudge mirrored the other way, so a reminder finds you when you are not at the machine. An unknown chat gets *no reply at all*: replying would confirm the bot exists. Anything needing confirmation is declined remotely rather than left hanging on a console prompt nobody is at — see §2.11. |
 | **Vision** | "What's this error?" (pointing at the screen) | The screen is captured, downscaled, and actually read by a vision model. `take_screenshot` saved a PNG and stopped; this closes the loop. One isolated call, never left in conversation history — a megapixel image re-sent every turn would be the most expensive mistake available — see §2.14. |
@@ -671,7 +671,7 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **138 tools currently registered**, split by permission tier:
+- **146 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
@@ -843,6 +843,114 @@ sequenceDiagram
   stray punctuation) that are meaningful *syntax* to FTS5's query language —
   an untokenized query can outright fail to parse.
 
+#### Hybrid retrieval — `peter/memory/embeddings.py`
+
+Keyword search only finds a fact when you reuse the words you stored it with.
+Measured on 130 stored facts with paraphrased questions, FTS5 alone recalled
+**3/10** — and filled the empty slots with unrelated facts, spending tokens on
+noise. Adding a local embedding index takes that to **10/10** while injecting
+*fewer* facts per turn, at ~5ms per query.
+
+| | recall@5 | facts injected/turn |
+|---|---|---|
+| keyword only (FTS5/BM25) | 3/10 | 8 (flat) |
+| hybrid, threshold 0.35 | 6/10 | 0.8 |
+| **hybrid, threshold 0.15** | **10/10** | **3.9** |
+
+Both halves are kept and unioned, because each covers the other's blind spot:
+embeddings find "how do I get to work" → "route 70 bus", which keywords
+cannot; keywords find an exact registration number or account id, which a
+sentence model has no useful vector for. The threshold's real job is returning
+**nothing** when nothing is relevant — an unrelated question retrieves zero
+facts rather than the least-bad match.
+
+**Why this is where retrieval belongs.** The memory block is ~572 tokens
+against ~15,469 for the tool schemas — but it goes in the *user* message,
+so it is billed at full price every turn while the tool schemas are served
+from the prompt cache at roughly a tenth. Per token it is about **10x more
+expensive**, which is why filtering here pays and why `agent.tool_filter`
+(which filters *cached* tokens, trading a 10x discount for a shorter list)
+is correctly off by default. End to end the block shrinks ~35%.
+
+**No new dependency.** `onnxruntime` was already present for openWakeWord,
+`tokenizers` arrived with faster-whisper, `numpy` runs the voice pipeline —
+together a complete embedding stack, so this costs one ~23MB model file and
+nothing else. Vectors are brute-forced with numpy rather than stored in a
+vector database: at a personal assistant's scale a dot product against the
+whole set is microseconds, and an index would be a dependency and a failure
+mode bought for no measurable speedup. Embeddings are computed locally, so
+**memory never leaves the machine** — the same property the wake word has,
+and the reason not to call a hosted embedding API.
+
+**Optional at every point.** No model file means `available()` is False and
+every path falls back to the FTS5 search that was always there; the whole
+suite passes with no model present. Vectors live in side tables
+(`fact_vectors`, `preference_vectors`, `preference_scope`) rather than as new
+columns, because the schema is applied with `CREATE TABLE IF NOT EXISTS`,
+which would silently not add a column to an existing `peter.db`.
+
+**Preference scope.** Preferences could not simply be retrieved: "keep replies
+short" applies to every turn, while "prefer Amazon for price checks" only
+matters sometimes. So each carries a scope — `always` (injected unconditionally,
+and the default) or `contextual` (retrieved). Defaulting to `always` is the
+safe direction: one wrongly marked contextual silently stops applying, while
+one wrongly marked always merely costs a few tokens. A preference stored
+before scopes existed has no row and is therefore treated as `always`, so
+old databases keep their exact previous behaviour.
+
+---
+
+### 2.5b Learning from a correction — `peter/agent/learning.py`
+
+**Job:** notice when you have just corrected Peter, and turn that into a rule
+that survives the conversation — so the same correction is not needed again
+next week.
+
+The storage half of this already existed: `set_preference`/`remember_fact`
+write it, `context_block()` replays it. What was missing was the *trigger* —
+none of that happened unless the model itself chose to call a memory tool
+mid-conversation, which it rarely did.
+
+```mermaid
+flowchart TD
+    A["turn N: 'no, always keep it short'"] --> B{"looks_like_correction()<br/>keyword pre-filter, no model call"}
+    B -- no --> Z["ordinary turn — costs nothing"]
+    B -- yes --> C["one isolated, tool-free model call<br/>sees turn N-1's ask, reply, and this correction"]
+    C --> D{"does it generalise<br/>past this one request?"}
+    D -- no --> E["NOTHING — the common, expected answer"]
+    D -- yes --> F["preference&#124;key&#124;value<br/>or fact&#124;key&#124;value"]
+    F --> G["stored, announced in the reply"]
+    G --> H["replayed by context_block() on every later turn"]
+```
+
+Three restraints matter more than the happy path, because a system that
+learns the *wrong* thing permanently is worse than one that never learns:
+
+- **It prefers silence.** The extractor is instructed to answer `NOTHING`
+  unless the lesson holds beyond this one request, and `NOTHING` is the
+  documented default rather than a failure. "No, make it 6pm instead" is a
+  changed mind, not a rule that every reminder is at 6pm. `_parse()` treats
+  anything off-format as `NOTHING` too — it is reading untrusted model output
+  on its way into long-term memory, so the bar is the exact documented shape.
+- **It never deletes to make room.** Preferences are injected on *every* turn
+  and so cannot grow unbounded, but `max_preferences` is a **refusal** limit,
+  not an eviction limit: at the cap Peter declines to learn something new and
+  says so, rather than dropping a preference you set on purpose. Updating an
+  existing key is still allowed, since that does not grow the list.
+- **It says what it learned.** The stored lesson is appended to the spoken
+  reply, and `list_preferences` / `forget_preference` already exist to audit
+  and undo it. Behaviour that changes without telling you is indistinguishable
+  from a bug.
+
+**Cost.** The keyword pre-filter settles an ordinary turn with a regex, so no
+model call happens at all on a normal turn. A false positive there costs one
+cheap call that returns `NOTHING` — deliberately the cheap failure, versus a
+false *negative*, which silently loses the lesson. The call runs after the
+answer is already in hand, so nothing the user is waiting on is delayed except
+the note itself. And because memory is injected into the **user** message
+rather than the system prompt (see §2.5), a newly learned preference does not
+invalidate the cached prompt prefix.
+
 ---
 
 ### 2.6 Browser Automation — `peter/integrations/browser/`
@@ -1012,6 +1120,71 @@ flowchart LR
 - `ServiceContainer.health()` (surfaced by `python -m peter.main --health`)
   walks every provider/integration and reports its real state — this is the
   single command that answers "is everything wired up correctly."
+
+#### Contacts and Drive — same OAuth client, two more scopes
+
+`peter/integrations/google/contacts.py` (People API, read-only) and Drive
+support inside `peter/docs_index.py` reuse the exact OAuth client Calendar/
+Tasks already build (`peter/integrations/google/auth.py`) — no new auth
+module, just two more scopes on `GoogleConfig.scopes`
+(`contacts.readonly`, `drive.readonly`).
+
+**A scope added after a token already exists doesn't retroactively cover
+it.** A user who authorised before these scopes existed keeps working for
+Calendar/Tasks but gets a 403 on the first Contacts/Drive call — already
+handled by the exact `_call()` pattern `calendar.py`/`tasks.py` established
+(403/401 → `AuthError` naming `--google-auth`), so this needed a docs
+callout, not new code.
+
+**Contacts is deliberately not wired into `send_email`.** `find_google_contact`
+resolves a name to a real address; `send_email` still requires the address
+itself. Same split `call_contact`/`make_phone_call` already established in
+`peter/tools/phone_tools.py` — resolving a name is a different trust
+boundary than a write action trusting whatever string it's handed, and
+that boundary is worth keeping consistent across every place a name gets
+resolved to a contact detail, not just the phone.
+
+**Drive is a second source in the existing document index, not a second
+store.** `peter/docs_index.py`'s `documents.path` is already just a text
+primary key and `documents.folder` a free-text label — a Drive file fits as
+`path = "gdrive://<file_id>"`, `folder = "Google Drive"`, no schema change.
+`search_docs`/`ask_docs`/`docs_index_status` needed **zero** changes; they
+already query every row in `documents` regardless of source.
+`index_drive_folder()` lists one folder non-recursively (an explicit
+target, not an open-ended Drive crawl), exports Google Docs/Sheets/Slides
+to text (they have no native binary content), downloads everything else
+already in the `extensions` allowlist, and reuses `_chunk()`/the insert
+path verbatim — its only job is getting Drive bytes into the same shape
+`_index_one()` already consumes for local files.
+
+#### Google Keep — the one integration that isn't OAuth
+
+`peter/integrations/google/keep.py` exists because there is **no official
+Keep API for a personal Google account** — the real one is Workspace-only,
+gated behind an admin granting domain-wide delegation, which a plain
+`@gmail.com` address has no path to. The only way in is `gkeepapi`, an
+unofficial client authenticating with a **master token**: the same
+capability level as your account password, obtained once outside Peter
+(gkeepapi's own documented method), not a scoped, individually revocable
+OAuth grant.
+
+This module deliberately does **not** import `peter.integrations.google.auth`
+— sharing it would misleadingly imply Keep uses the same, safer flow every
+other Google integration here does. It does not, and every setup doc says
+so before showing how to enable it.
+
+`KeepConfig.enabled` defaults to **`false`**, the only `enabled: true`-by-
+default exception in `IntegrationsConfig` — nothing should attempt an
+account-wide, unofficial login unless a human has explicitly opted in and
+provided the token. `gkeepapi`'s own exception hierarchy
+(`LoginException`, `APIException`, `SyncException`) gets the same
+translate-into-`AuthError`/`IntegrationError`-with-a-`user_action`
+treatment `_call()` gives `HttpError` elsewhere, just against a different
+library — including one subtlety worth naming: `_sync()`'s generic
+exception handler must not re-wrap an `AuthError` that `_authenticate()`
+already raised (accessing the lazy `self.keep` property can trigger it),
+which is exactly the kind of double-wrapping bug a test caught during
+development — see `tests/test_keep.py`.
 
 ---
 
@@ -1760,7 +1933,7 @@ sharp for the model choosing between them.
 
 Direct follow-up to the language-architecture discussion: rather than guess
 whether any tool is CPU-bound enough to be worth a Rust/PyO3 rewrite, measure
-it. Every one of the 137 registered tools gets timed with zero changes to any
+it. Every one of the 146 registered tools gets timed with zero changes to any
 of them, by adding one more measurement at the exact point `policy/gate.py`
 was already timing calls for the audit log.
 
@@ -1876,7 +2049,7 @@ disabled — because it genuinely conflicts with the caching design, not just
 out of caution.** The tool list is part of the cached prompt prefix on every
 vendor (`registry.py`'s own docstring, and
 `test_tools_are_sorted_so_the_cache_prefix_is_stable`), and a per-turn
-filter by definition makes that list vary with `user_text`. At 138 tools,
+filter by definition makes that list vary with `user_text`. At 146 tools,
 the tokens saved by a smaller per-turn list can plausibly be smaller than
 what a lost cache hit costs — a cache *write* bills more than a cache
 *read* on every provider here. `agent.tool_filter.enabled` therefore
@@ -1928,7 +2101,7 @@ peter_3.0/
 │   ├── policy/
 │   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
 │   │   └── audit.py              # append-only JSONL trail
-│   ├── tools/                   # §2.3 the 138 registered tools
+│   ├── tools/                   # §2.3 the 146 registered tools
 │   ├── memory/store.py          # §2.5 SQLite + FTS5
 │   ├── scheduler/jobs.py        # §2.8 APScheduler + SQLite jobstore
 │   ├── meeting_prep.py          # §2.10 calendar + memory nudge

@@ -141,6 +141,26 @@ class SubagentConfig(BaseModel):
     max_workers: int = Field(default=4, ge=1, le=8)
 
 
+class LearningConfig(BaseModel):
+    """Turning a correction into a standing rule. See peter/agent/learning.py.
+
+    Only a turn that reads like a correction reaches the model call at all, so
+    this costs nothing on an ordinary turn. `max_preferences` is a refusal
+    limit, not an eviction limit: at the cap Peter declines to learn something
+    new and says so, rather than deleting a preference set on purpose.
+    """
+
+    enabled: bool = True
+    # Empty means the configured provider's own model. A cheap model is right
+    # here: the job is "does this generalise?", not reasoning.
+    provider: str = ""
+    model: str = ""
+    max_preferences: int = Field(default=25, ge=1)
+    # Say what was learned. Off makes Peter change behaviour silently, which
+    # is hard to tell apart from a bug — leave it on unless it gets chatty.
+    announce: bool = True
+
+
 class BudgetConfig(BaseModel):
     """A daily spend ceiling, in rupees. See peter/spend.py.
 
@@ -224,6 +244,7 @@ class AgentConfig(BaseModel):
     usd_to_inr_rate: float = Field(default=88.0, gt=0)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     subagent: SubagentConfig = Field(default_factory=SubagentConfig)
+    learning: LearningConfig = Field(default_factory=LearningConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     tool_filter: ToolFilterConfig = Field(default_factory=ToolFilterConfig)
 
@@ -306,10 +327,18 @@ class MailConfig(BaseModel):
 
 class GoogleConfig(BaseModel):
     enabled: bool = True
+    # Adding a scope here means a token authorised before the addition no
+    # longer covers it — Calendar/Tasks keep working, but Contacts/Drive
+    # calls get a 403 until `--google-auth` is re-run. The existing 403
+    # handling in each client's _call() already turns that into a spoken
+    # AuthError naming the fix, so this needs no special-case code, only a
+    # one-time re-auth after upgrading.
     scopes: list[str] = Field(
         default_factory=lambda: [
             "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/tasks",
+            "https://www.googleapis.com/auth/contacts.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
         ]
     )
     calendar_id: str = "primary"
@@ -746,6 +775,13 @@ class DocsConfig(BaseModel):
     max_file_kb: int = Field(default=512, gt=0)
     chunk_chars: int = Field(default=1200, ge=200, le=8000)
     max_files: int = Field(default=5000, gt=0)
+    # A Google Drive folder id to index alongside your local folders — same
+    # index, same search, same skip-if-unchanged behaviour, just fetched over
+    # the API instead of the filesystem. Empty means Drive indexing is off,
+    # matching how an empty `folders` list already means "index nothing" for
+    # the local side. Find the id in a Drive folder's URL, the part after
+    # /folders/.
+    drive_folder_id: str = ""
     skip_directories: list[str] = Field(
         default_factory=lambda: [
             ".git", ".venv", "venv", "node_modules", "__pycache__", "dist",
@@ -754,9 +790,27 @@ class DocsConfig(BaseModel):
     )
 
 
+class KeepConfig(BaseModel):
+    """Google Keep, via the unofficial gkeepapi client. See
+    peter/integrations/google/keep.py.
+
+    Deliberately the one integration in this file defaulting to `enabled:
+    false`. Every other integration here authenticates with something
+    individually revocable — an OAuth grant, an app password. Keep
+    authenticates with a master token: full account-wide access, obtained
+    outside Peter, that only your Google account password itself can revoke.
+    Nothing should attempt that login unless you have explicitly opted in
+    and provided the token. See docs/USER_MANUAL.md's Keep setup section
+    before turning this on.
+    """
+
+    enabled: bool = False
+
+
 class IntegrationsConfig(BaseModel):
     mail: MailConfig = Field(default_factory=MailConfig)
     google: GoogleConfig = Field(default_factory=GoogleConfig)
+    keep: KeepConfig = Field(default_factory=KeepConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     briefing: BriefingConfig = Field(default_factory=BriefingConfig)
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
@@ -795,6 +849,12 @@ class Secrets(BaseModel):
     mail_app_password: SecretStr = SecretStr("")
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
+    # Keep's credential, not OAuth: a master token is capability-equivalent
+    # to your Google password, unlike the client secret above (which only
+    # unlocks whatever scopes you separately grant per-app). SecretStr here
+    # is load-bearing, not just consistency with the rest of this class.
+    google_keep_email: str = ""
+    google_keep_master_token: SecretStr = SecretStr("")
     telegram_bot_token: SecretStr = SecretStr("")
 
     @classmethod
@@ -810,6 +870,10 @@ class Secrets(BaseModel):
             google_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", ""),
             google_client_secret=SecretStr(
                 os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
+            ),
+            google_keep_email=os.getenv("GOOGLE_KEEP_EMAIL", ""),
+            google_keep_master_token=SecretStr(
+                os.getenv("GOOGLE_KEEP_MASTER_TOKEN", "")
             ),
             telegram_bot_token=SecretStr(os.getenv("TELEGRAM_BOT_TOKEN", "")),
         )
@@ -848,6 +912,14 @@ class Secrets(BaseModel):
         return bool(self.google_client_id and self.google_secret)
 
     @property
+    def google_keep_token(self) -> str:
+        return self.google_keep_master_token.get_secret_value()
+
+    @property
+    def has_keep(self) -> bool:
+        return bool(self.google_keep_email and self.google_keep_token)
+
+    @property
     def telegram_token(self) -> str:
         return self.telegram_bot_token.get_secret_value()
 
@@ -857,9 +929,38 @@ class Secrets(BaseModel):
 
 
 # ================================================================== root
+class EmbeddingsConfig(BaseModel):
+    """Semantic memory search. See peter/memory/embeddings.py.
+
+    Off until the model is downloaded (`--download-embeddings`), and it
+    degrades to the keyword search that was always there if the file is
+    missing — so leaving this on with no model costs nothing.
+    """
+
+    enabled: bool = True
+    # Facts injected per turn. Lower than the keyword-only default of 8 on
+    # purpose: with a relevance threshold doing real work, five good matches
+    # beat eight where three were padding.
+    top_k_facts: int = Field(default=5, ge=1, le=20)
+    # Cosine similarity below which a match is not worth prompt space.
+    # Tuned on a 130-fact corpus rather than guessed: 0.35 recalled 6/10
+    # paraphrased questions, 0.20 got 8/10, and 0.15 got 10/10 while still
+    # injecting fewer facts per turn (3.9) than the old keyword-only path's
+    # flat 8. `top_k_facts` caps the damage from a loose threshold, so the
+    # threshold's real job is returning *nothing* when nothing is relevant —
+    # which it does: an unrelated question retrieves zero facts.
+    similarity_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
+    top_k_contextual_preferences: int = Field(default=3, ge=0, le=10)
+
+
+class MemoryConfig(BaseModel):
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
+
+
 class Config(BaseModel):
     app: AppConfig = Field(default_factory=AppConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
@@ -884,6 +985,13 @@ class Config(BaseModel):
             path = PROJECT_ROOT / path
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def embeddings_dir(self) -> Path:
+        """Where the sentence-embedding model lives. Under data_dir so it is
+        covered by the same isolation the test suite already applies, and so
+        deleting data/ resets it like every other derived artefact."""
+        return self.data_dir / "embeddings"
 
     @property
     def db_path(self) -> Path:

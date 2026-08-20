@@ -15,11 +15,11 @@ from peter.core.services import services
 
 register_skill(SkillManifest(
     name="docs", version="1.0.0",
-    description="Full-text search over folders you point Peter at, with "
-                 "cited answers.",
-    module=__name__, permissions=("filesystem",),
-    tools=("index_folder", "search_docs", "ask_docs", "docs_index_status",
-           "forget_folder"),
+    description="Full-text search over folders you point Peter at (plus "
+                 "Google Drive), with cited answers.",
+    module=__name__, permissions=("filesystem", "network"),
+    tools=("index_folder", "index_drive_folder", "search_docs", "ask_docs",
+           "docs_index_status", "forget_folder"),
 ))
 
 
@@ -41,6 +41,29 @@ def index_folder(path: str, force: bool = False) -> str:
     except Exception as exc:
         return f"Indexing failed: {type(exc).__name__}: {exc}"
     return result.spoken(path)
+
+
+@peter_tool(tier="write")
+def index_drive_folder(folder_id: str) -> str:
+    """Index the files in one Google Drive folder so they become searchable
+    alongside your local folders.
+
+    Not recursive — only files directly inside the given folder. Google
+    Docs/Sheets/Slides are exported to text automatically.
+
+    Args:
+        folder_id: The Drive folder's id — the part of its URL after
+            /folders/, e.g. "1a2B3c4D5e...".
+    """
+    from peter.core.errors import PeterError
+
+    try:
+        result = services().docs().index_drive_folder(folder_id, services().config)
+    except ValueError:
+        return "Give a Drive folder id."
+    except PeterError as exc:
+        return str(exc)
+    return result.spoken("Google Drive")
 
 
 @peter_tool(tier="read")

@@ -135,6 +135,28 @@ agent:
     max_chars_per_site: 4000
     max_workers: 4
 
+  # Learning what you meant, from the moment you correct Peter.
+  # When a turn reads like a correction of the previous one ("no, I meant...",
+  # "from now on...", "when I say X..."), the pair goes to one small isolated
+  # model call that asks only: is there a rule here that will still be true
+  # next week? Usually the answer is no, and that costs nothing - an ordinary
+  # turn never reaches the model call at all, because a keyword pre-filter
+  # settles it first. What it does learn is stored as a standing preference
+  # or a fact, both of which memory already replays into later turns.
+  #   max_preferences  a REFUSAL limit, not an eviction limit: at the cap
+  #                    Peter declines to learn something new and says so,
+  #                    rather than deleting a preference you set on purpose.
+  #                    Use forget_preference to make room.
+  #   announce         say what was learned. Turning this off makes Peter
+  #                    change behaviour silently, which is hard to tell apart
+  #                    from a bug. Use list_preferences to audit either way.
+  learning:
+    enabled: true
+    provider: ""
+    model: ""
+    max_preferences: 25
+    announce: true
+
   # A daily spend ceiling, in rupees. 0 disables it, which is the default -
   # a budget that trips mid-sentence is worse than no budget until you have
   # looked at a week of real numbers (spend_report) and picked one on purpose.
@@ -174,6 +196,37 @@ agent:
   # Prompt cache lifetime for the system prefix.
   cache_ttl: 1h
   enable_web_tools: true
+
+memory:
+  # Semantic search over facts and preferences, so memory works on meaning
+  # rather than on reusing the exact words you stored something with.
+  #
+  # Measured on 130 stored facts with paraphrased questions ("how do I get to
+  # work" against "takes route 70 bus to Gandhipuram"), keyword-only search
+  # recalled 3/10 and filled the gaps with unrelated facts. Hybrid keyword +
+  # embedding search recalls 10/10 while injecting FEWER facts per turn, and
+  # takes about 5ms.
+  #
+  # Runs locally on onnxruntime (already here for the wake word), so nothing
+  # about your memory leaves the machine. Needs a one-off ~23MB download:
+  #     python -m peter.main --download-embeddings
+  # Until then this silently stays on the keyword search that was always
+  # there, so leaving it enabled with no model costs nothing.
+  embeddings:
+    enabled: true
+    # Facts injected per turn. Lower than the old flat 8 on purpose: with a
+    # relevance threshold doing real work, five good matches beat eight where
+    # three were padding.
+    top_k_facts: 5
+    # Cosine similarity below which a match is not worth prompt space. Tuned,
+    # not guessed: 0.35 recalled 6/10, 0.20 got 8/10, 0.15 got 10/10 and still
+    # injected fewer facts than before. Raise it if you see irrelevant facts
+    # being recalled; lower it if Peter forgets things you know are stored.
+    similarity_threshold: 0.15
+    # How many `contextual`-scope preferences may be retrieved per turn.
+    # `always`-scope preferences are injected regardless and are not counted
+    # here — see the scope note in the user manual.
+    top_k_contextual_preferences: 3
 
 voice:
   wake:
@@ -313,16 +366,36 @@ integrations:
 
   google:
     enabled: true
-    # Calendar and Tasks scopes are "sensitive", not "restricted" — they do not
-    # need the security audit Gmail would. Set the consent screen to
-    # "In Production" to escape the 7-day token expiry. See README.
+    # Calendar, Tasks, Contacts-readonly and Drive-readonly are all
+    # "sensitive", not "restricted" — none need the security audit Gmail
+    # would. Set the consent screen to "In Production" to escape the 7-day
+    # token expiry. See README.
+    #
+    # Added contacts.readonly/drive.readonly after Calendar+Tasks were
+    # already authorised? Re-run --google-auth once — the stored token does
+    # not automatically pick up a newly added scope, and Contacts/Drive calls
+    # will 403 (with a clear message pointing back here) until you do.
     scopes:
       - https://www.googleapis.com/auth/calendar
       - https://www.googleapis.com/auth/tasks
+      - https://www.googleapis.com/auth/contacts.readonly
+      - https://www.googleapis.com/auth/drive.readonly
     calendar_id: primary
     tasklist_id: "@default"
     oauth_port: 0             # 0 = pick any free port
     timeout_seconds: 30
+
+  # Google Keep, via the unofficial gkeepapi client — NOT the OAuth flow
+  # above. There is no official Keep API for a personal Google account (it
+  # is Workspace-only, gated behind admin domain-wide delegation), so the
+  # only way in is a client that authenticates with a master token: the same
+  # capability as your account password, not a scoped, individually
+  # revocable grant. Off by default on purpose. Read
+  # docs/USER_MANUAL.md's Keep setup section — and understand what you are
+  # trading — before setting this to true and filling in GOOGLE_KEEP_EMAIL /
+  # GOOGLE_KEEP_MASTER_TOKEN in .env.
+  keep:
+    enabled: false
 
   browser:
     enabled: true
@@ -551,7 +624,7 @@ integrations:
     # disconnected, instead of failing until you re-run `adb connect` by
     # hand — a wireless session doesn't survive the phone leaving Wi-Fi, a
     # reboot, or wireless debugging being toggled off and on.
-    wireless_address: ""
+    wireless_address: "100.88.15.102:5555"
     # Folders transcribe_phone_voice_note checks, in order, for the newest
     # audio file. WhatsApp's own folder plus common recorder-app ones.
     voice_note_dirs:
@@ -653,6 +726,13 @@ integrations:
     max_file_kb: 512        # above this is almost always generated output
     chunk_chars: 1200
     max_files: 5000
+    # A Google Drive folder id to index into the same search alongside the
+    # local folders above. Empty means Drive indexing is off. Find the id in
+    # the folder's URL: drive.google.com/drive/folders/<this part>.
+    # Needs integrations.google.scopes to include drive.readonly (it does by
+    # default) and a re-run of --google-auth if you authorised before that
+    # scope existed.
+    drive_folder_id: ""
     skip_directories:
       - .git
       - .venv

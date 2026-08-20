@@ -26,11 +26,25 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from peter.core.db import Db
 
 log = logging.getLogger(__name__)
+
+# Google Docs/Sheets/Slides have no native binary content — they must be
+# exported. Everything else (a stored .txt/.md/etc, matched against the same
+# `extensions` allowlist as local folders) is downloaded as-is.
+_GOOGLE_APPS_EXPORT = {
+    "application/vnd.google-apps.document": "text/plain",
+    "application/vnd.google-apps.spreadsheet": "text/csv",
+    "application/vnd.google-apps.presentation": "text/plain",
+}
+
+# Drive files live in the same `documents` table as local files, namespaced
+# so a synthetic id can never collide with a real filesystem path.
+_DRIVE_PREFIX = "gdrive://"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -184,6 +198,134 @@ class DocIndex:
         result.chunks += len(chunks)
         return result
 
+    # --------------------------------------------------------- google drive
+    def index_drive_folder(self, folder_id: str, config) -> IndexResult:
+        """Index the files directly inside one Drive folder (not recursive —
+        an explicit target, not an open-ended crawl of the whole Drive) into
+        this same store. Google Docs/Sheets/Slides are exported to text;
+        everything else is matched against the same `extensions` allowlist
+        local folders use.
+        """
+        from googleapiclient.errors import HttpError
+
+        from peter.core.errors import AuthError, IntegrationError
+        from peter.integrations.google.auth import build_service
+
+        folder_id = folder_id.strip()
+        if not folder_id:
+            raise ValueError("folder_id is required")
+
+        service = build_service(config, "drive", "v3")
+        extensions = {e.lower() for e in self.cfg.extensions}
+        result = IndexResult()
+        page_token = None
+        seen = 0
+
+        while seen < self.cfg.max_files:
+            try:
+                payload = service.files().list(
+                    q=f"'{folder_id}' in parents and trashed = false",
+                    fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+                    pageSize=min(100, self.cfg.max_files - seen),
+                    pageToken=page_token,
+                ).execute()
+            except HttpError as exc:
+                status = getattr(exc.resp, "status", 0)
+                if status in (401, 403):
+                    raise AuthError(
+                        f"Google rejected the request ({status}) while listing Drive files",
+                        service="google",
+                        user_action=(
+                            "Run: python -m peter.main --google-auth. If Drive "
+                            "was just enabled, the stored token needs a "
+                            "re-run to pick up the new scope."
+                        ),
+                    ) from exc
+                raise IntegrationError(
+                    f"Drive error while listing files: {exc}",
+                    service="google",
+                    recoverable=status >= 500 or status == 429,
+                ) from exc
+
+            for meta in payload.get("files", []):
+                seen += 1
+                self._index_drive_file(service, meta, extensions, result)
+
+            page_token = payload.get("nextPageToken")
+            if not page_token:
+                break
+
+        return result
+
+    def _index_drive_file(self, service, meta: dict, extensions: set, result: IndexResult) -> None:
+        from googleapiclient.errors import HttpError
+
+        file_id = meta["id"]
+        name = meta["name"]
+        mime = meta.get("mimeType", "")
+        path = f"{_DRIVE_PREFIX}{file_id}"
+        export_mime = _GOOGLE_APPS_EXPORT.get(mime)
+
+        if export_mime is None and not any(
+            name.lower().endswith(ext) for ext in extensions
+        ):
+            result.skipped += 1
+            return
+
+        try:
+            modified_at = datetime.fromisoformat(
+                meta["modifiedTime"].replace("Z", "+00:00")
+            ).timestamp()
+        except (KeyError, ValueError):
+            modified_at = time.time()
+
+        row = self.db.one("SELECT mtime FROM documents WHERE path = ?", (path,))
+        if row and row["mtime"] == modified_at:
+            result.unchanged += 1
+            return
+
+        size = int(meta.get("size") or 0)
+        if export_mime is None and size > self.cfg.max_file_kb * 1024:
+            result.skipped += 1
+            return
+
+        try:
+            if export_mime:
+                raw = service.files().export(fileId=file_id, mimeType=export_mime).execute()
+            else:
+                raw = service.files().get_media(fileId=file_id).execute()
+        except HttpError as exc:
+            log.warning("doc index: could not fetch Drive file %r (%s): %s", name, file_id, exc)
+            result.skipped += 1
+            return
+        except Exception:
+            log.warning("doc index: could not read Drive file %r", name, exc_info=True)
+            result.skipped += 1
+            return
+
+        text = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else str(raw)
+        chunks = list(self._chunk(text))
+        if not chunks:
+            result.skipped += 1
+            return
+
+        self.db.execute("DELETE FROM doc_chunks WHERE path = ?", (path,))
+        self.db.execute_many(
+            "INSERT INTO doc_chunks (path, name, body) VALUES (?, ?, ?)",
+            [(path, name, chunk) for chunk in chunks],
+        )
+        self.db.execute(
+            """INSERT INTO documents (path, name, folder, mtime, size, chunks, indexed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+                   mtime = excluded.mtime, size = excluded.size,
+                   chunks = excluded.chunks, indexed_at = excluded.indexed_at""",
+            (path, name, "Google Drive", modified_at, len(text.encode("utf-8")),
+             len(chunks), time.time()),
+        )
+        result.files += 1
+        result.chunks += len(chunks)
+
     def _chunk(self, text: str):
         """Split on blank lines, packing up to chunk_chars per passage.
 
@@ -210,14 +352,24 @@ class DocIndex:
             yield "\n\n".join(current)
 
     def forget(self, folder: str | Path) -> int:
-        """Drop everything indexed under a folder."""
+        """Drop everything indexed under a folder.
+
+        Matches either a local path prefix, or the `folder` label exactly —
+        the second is what lets `forget("Google Drive")` clear every
+        Drive-indexed file, since those live under a synthetic `gdrive://`
+        path rather than a real filesystem prefix.
+        """
+        label = str(folder)
         prefix = f"{Path(folder).expanduser()}%"
         rows = self.db.query(
-            "SELECT path FROM documents WHERE path LIKE ?", (prefix,)
+            "SELECT path FROM documents WHERE path LIKE ? OR folder = ?",
+            (prefix, label),
         )
         for row in rows:
             self.db.execute("DELETE FROM doc_chunks WHERE path = ?", (row["path"],))
-        self.db.execute("DELETE FROM documents WHERE path LIKE ?", (prefix,))
+        self.db.execute(
+            "DELETE FROM documents WHERE path LIKE ? OR folder = ?", (prefix, label)
+        )
         return len(rows)
 
     # ------------------------------------------------------------ searching

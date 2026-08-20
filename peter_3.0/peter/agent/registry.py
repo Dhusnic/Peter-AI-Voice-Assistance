@@ -164,6 +164,8 @@ TOOL_MODULES = (
     "peter.tools.memory_tools",
     "peter.tools.mail_tools",
     "peter.tools.calendar_tools",
+    "peter.tools.contacts_tools",
+    "peter.tools.keep_tools",
     "peter.tools.briefing_tools",
     "peter.tools.browser_tools",
     "peter.tools.desktop_tools",
@@ -195,6 +197,13 @@ _REQUIRES = {
         lambda c: c.integrations.mail.enabled and c.secrets.has_mail,
     "peter.tools.calendar_tools":
         lambda c: c.integrations.google.enabled and c.secrets.has_google,
+    "peter.tools.contacts_tools":
+        lambda c: c.integrations.google.enabled and c.secrets.has_google,
+    # Off unless you've read the setup doc and opted in — see KeepConfig's
+    # own docstring for why this integration defaults differently from
+    # every other one here.
+    "peter.tools.keep_tools":
+        lambda c: c.integrations.keep.enabled and c.secrets.has_keep,
     "peter.tools.desktop_tools":
         lambda c: c.integrations.desktop.enabled,
     # Needs a repository to look at; with none configured every one of these
