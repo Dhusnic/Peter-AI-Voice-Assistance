@@ -198,6 +198,15 @@ def call_contact(contact_name: str) -> str:
     number, nothing is dialled and the matches are listed so you can ask the
     user which they meant — it never guesses between them.
 
+    Always call this again — with a name, not the number from its own
+    earlier result — once the user confirms who they meant, even mid
+    conversation. "call Ancy" -> this lists candidates -> user says "yes,
+    Ancy" -> call this again with contact_name="Ancy", not make_phone_call
+    with the number this already returned. Reaching for make_phone_call once
+    a number is sitting in the conversation is exactly the shortcut that
+    defeats the point of having two tools: it re-adds the confirmation step
+    a name-resolved call is supposed to skip.
+
     Args:
         contact_name: A saved contact's name, e.g. "Ancy" or "Ancy Mom" — an
             exact phrase match is tried first, falling back to matching on
@@ -232,11 +241,14 @@ def make_phone_call(number: str) -> str:
     """Call a phone number directly. Connects immediately — a real call, not
     a dial screen the user still has to tap to send.
 
-    If the user named a saved contact instead of speaking digits, use
-    call_contact — it resolves the name against the phone's contacts and
-    (unlike this tool) does not need confirmation first, since dialling an
-    already-saved number is materially safer than one transcribed from
-    speech.
+    Only use this for a number the user actually spoke as digits. If they
+    named a saved contact at any point in the conversation — even several
+    turns ago, even if their number is now sitting in an earlier tool
+    result — call call_contact with that name instead, every time, not this
+    tool with the number. This one always asks for confirmation; call_contact
+    doesn't need to, precisely because it re-resolves the name against saved
+    contacts rather than trusting a number that's merely been mentioned.
+    Passing that number here defeats the reason the two tools are split.
 
     Args:
         number: The number to call, e.g. "+91 90000 00000". Digits and
