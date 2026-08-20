@@ -16,10 +16,25 @@ the real-world messages. Splitting on the *next field name* instead is what
 survives contact with actual SMS. Call log rows and the contacts table parse
 the same way.
 
-Reading (SMS, calls, contacts, the screen) is unrestricted. Acting on the
-phone is deliberately narrow: `open_url` only ever opens a web page — never a
-message send, a call, or an arbitrary intent — and there is still no way for
-Peter to send a text or place a call as you.
+**Why `--projection` is colon-separated, not comma-separated.** Found by
+actually running this against a real phone, not by reading Android's docs:
+`content query`'s comma-separated projection form (`--projection a,b,c`)
+works for `content://sms/inbox` on this device but fails outright for
+`content://call_log/calls` ("Invalid column a,b,c" — the whole string taken
+as one literal column name) and for the contacts provider ("Non-token
+detected in 'a,b'" — a stricter tokenizer rejects it even with a space after
+the comma). A colon-separated projection (`a:b:c`) works identically across
+all three. The contacts provider has a second, unrelated gotcha on top: its
+friendly `number` column alias is not resolvable through the raw `content`
+CLI at all (`Invalid column number`) even once the separator is fixed — the
+real column underneath is `data1`, the generic key-value slot
+`ContactsContract` uses for a phone-type row's number.
+
+Reading (SMS, calls, contacts, the screen) is unrestricted. Acting spans a
+much wider range now than "narrow" — calls, Spotify, alarms, a web page
+pushed to the phone's screen — but sending a text as you is still out of
+scope; see `peter/tools/phone_tools.py` for what each write-tier tool
+actually does and why.
 """
 
 from __future__ import annotations
@@ -39,9 +54,15 @@ from peter.core.errors import IntegrationError
 
 log = logging.getLogger(__name__)
 
-_ROW = re.compile(r"^Row:\s*\d+\s+(.*)$")
-# key=value, ending at the next "key=" or at end of line.
-_FIELD = re.compile(r"(\w+)=(.*?)(?=,\s+\w+=|$)")
+# DOTALL on both: a field's value can itself contain a literal newline (a
+# multi-line bank SMS body, in practice — "Sent Rs.60.00\nFrom HDFC Bank
+# A/C...\nRef 1234...", verified against a real device). Without DOTALL,
+# `.` stops at that embedded newline, silently truncating the value and
+# losing whatever field came after it (`date`, in the case that surfaced
+# this — every affected message read back as 1 Jan 1970).
+_ROW = re.compile(r"^Row:\s*\d+\s+(.*)$", re.DOTALL)
+# key=value, ending at the next "key=" or at end of the row.
+_FIELD = re.compile(r"(\w+)=(.*?)(?=,\s+\w+=|$)", re.DOTALL)
 # A one-time code: 4-8 digits standing alone, not part of a longer number.
 _CODE = re.compile(r"(?<!\d)(\d{4,8})(?!\d)")
 
@@ -146,6 +167,19 @@ def _quote(value: str) -> str:
     return shlex.quote(value)
 
 
+def _rows(raw: str) -> list[str]:
+    """Split `content query` output into one chunk per row.
+
+    Deliberately not `raw.splitlines()`: a row boundary is only a newline
+    immediately followed by the next "Row: N " marker. A field's value can
+    contain a literal newline of its own (a multi-line SMS body), and
+    splitting on every newline would break one logical row into several that
+    no longer match `_ROW` — silently truncating the value and dropping
+    whatever came after it.
+    """
+    return re.split(r"\r?\n(?=Row:\s*\d+\s)", raw.strip())
+
+
 def _normalize_number(number: str | None) -> str:
     """Last 10 digits, so "+91 90000 00000", "090000-00000" and a plain
     10-digit contacts entry all match each other regardless of formatting."""
@@ -157,9 +191,16 @@ def available(cfg) -> bool:
     return shutil.which(_resolved_adb_path(cfg)) is not None
 
 
-def _contacts_cache(cfg) -> dict[str, str]:
-    """Normalized number -> contact display name, for labelling SMS senders
-    and call log entries.
+def _contacts_cache(cfg) -> dict[str, tuple[str, str]]:
+    """Normalized number -> (display name, number as the contacts app has it
+    saved), for labelling SMS senders and call log entries, and for looking
+    a contact up by name to call them.
+
+    The raw number is kept alongside the normalized one deliberately: the
+    normalized form (last 10 digits) is right for *matching* an incoming
+    SMS or call to a name regardless of formatting, but is not always
+    dialable on its own — an international number truncated to its last 10
+    digits loses the country code. Calling a contact needs the real thing.
 
     Best-effort and never raises: a phone with contacts-read blocked, or none
     saved at all, just means names do not resolve — SMS and call log reading
@@ -171,28 +212,69 @@ def _contacts_cache(cfg) -> dict[str, str]:
     if cached and now - cached[0] < _CONTACTS_TTL_SECONDS:
         return cached[1]
 
-    table: dict[str, str] = {}
+    table: dict[str, tuple[str, str]] = {}
     try:
         raw = _run(
             ["shell", "content query --uri content://com.android.contacts/data/phones "
-                      "--projection display_name,number"],
+                      "--projection display_name:data1"],
             cfg,
         )
-        for line in raw.splitlines():
-            match = _ROW.match(line.strip())
+        for row in _rows(raw):
+            match = _ROW.match(row.strip())
             if not match:
                 continue
             fields = dict(_FIELD.findall(match.group(1)))
             name = _null(fields.get("display_name"))
-            number = _normalize_number(_null(fields.get("number")))
-            if name and number:
-                table[number] = name
+            number_raw = _null(fields.get("data1"))
+            number_norm = _normalize_number(number_raw)
+            if name and number_norm and number_raw:
+                table[number_norm] = (name, number_raw)
     except IntegrationError:
         log.debug("could not read phone contacts; names will not be resolved",
                    exc_info=True)
 
     _contacts_cached[key] = (now, table)
     return table
+
+
+def _contact_name(contacts: dict[str, tuple[str, str]], number: str) -> str | None:
+    entry = contacts.get(_normalize_number(number))
+    return entry[0] if entry else None
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def find_contact(cfg, name: str) -> list[tuple[str, str]]:
+    """Saved contacts matching `name`, as (display name, dialable number)
+    pairs — for resolving "call Ancy Mom" to an actual number.
+
+    Two passes. First, the query as a literal substring of the saved name —
+    the common case when the caller passes exactly what's saved. If nothing
+    matches that way, falls back to matching any individual *word* of the
+    query against the contact's own words: natural speech adds relationship
+    words ("mom", "dad's office") that are often not part of the saved name
+    at all — a real example that motivated this: a contact saved as bare
+    "Ancy", called "Ancy Mom" out loud, matches nothing on substring alone
+    but does on the shared word "ancy".
+
+    More than one match (two numbers for one person, several contacts
+    sharing a word) is returned as-is; the caller decides whether that needs
+    disambiguating rather than guessing here.
+    """
+    needle = name.strip().lower()
+    if not needle:
+        return []
+
+    contacts = list(_contacts_cache(cfg).values())
+    exact = [(n, num) for n, num in contacts if needle in n.lower()]
+    if exact:
+        return list(dict.fromkeys(exact))
+
+    query_words = set(_words(needle))
+    token_matches = [(n, num) for n, num in contacts if query_words & set(_words(n))]
+    return list(dict.fromkeys(token_matches))
 
 
 def _run(device_command: list[str], cfg, timeout: float | None = None) -> str:
@@ -283,15 +365,15 @@ def messages(cfg, since_minutes: int = 10080, limit: int = 20) -> list[Sms]:
     cutoff_ms = int((datetime.now() - timedelta(minutes=since_minutes)).timestamp() * 1000)
     command = (
         "content query --uri content://sms/inbox "
-        "--projection address,body,date "
+        "--projection address:body:date "
         f'--where "date>{cutoff_ms}"'
     )
     raw = _run(["shell", command], cfg)
     contacts = _contacts_cache(cfg)
 
     found: list[Sms] = []
-    for line in raw.splitlines():
-        match = _ROW.match(line.strip())
+    for row in _rows(raw):
+        match = _ROW.match(row.strip())
         if not match:
             continue
         fields = dict(_FIELD.findall(match.group(1)))
@@ -304,7 +386,7 @@ def messages(cfg, since_minutes: int = 10080, limit: int = 20) -> list[Sms]:
         found.append(
             Sms(
                 sender=sender,
-                sender_name=contacts.get(_normalize_number(sender)),
+                sender_name=_contact_name(contacts, sender),
                 body=(fields.get("body") or "").strip(),
                 when=when,
             )
@@ -319,20 +401,20 @@ def calls(cfg, since_minutes: int = 10080, limit: int = 20) -> list[Call]:
     cutoff_ms = int((datetime.now() - timedelta(minutes=since_minutes)).timestamp() * 1000)
     command = (
         "content query --uri content://call_log/calls "
-        "--projection number,name,type,date,duration "
+        "--projection number:name:type:date:duration "
         f'--where "date>{cutoff_ms}"'
     )
     raw = _run(["shell", command], cfg)
     contacts = _contacts_cache(cfg)
 
     found: list[Call] = []
-    for line in raw.splitlines():
-        match = _ROW.match(line.strip())
+    for row in _rows(raw):
+        match = _ROW.match(row.strip())
         if not match:
             continue
         fields = dict(_FIELD.findall(match.group(1)))
         number = _null(fields.get("number")) or "unknown"
-        name = _null(fields.get("name")) or contacts.get(_normalize_number(number))
+        name = _null(fields.get("name")) or _contact_name(contacts, number)
         when = None
         try:
             when = datetime.fromtimestamp(int(fields.get("date", 0)) / 1000)

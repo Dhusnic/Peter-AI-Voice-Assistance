@@ -531,7 +531,7 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **122 tools currently registered**, split by permission tier:
+- **123 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
@@ -552,19 +552,25 @@ flowchart LR
 | `recorder_tools.py` | 4 | 3 | record, transcribe, summarise, read back |
 | `dev_tools.py` | 7 | 0 | git, PRs, CI, work log, standup |
 | `telegram_tools.py` | 1 | 1 | send to your phone, bridge status |
-| `phone_tools.py` | 5 | 10 | SMS, one-time code, call log, phone screen, phone status / open a link, save a screenshot, make/answer/end a call, Spotify play/pause/skip, set/dismiss a phone alarm |
-| **Total** | **60** | **62** | |
+| `phone_tools.py` | 5 | 11 | SMS, one-time code, call log, phone screen, phone status / open a link, save a screenshot, call a contact/make/answer/end a call, Spotify play/pause/skip, set/dismiss a phone alarm |
+| **Total** | **60** | **63** | |
 
   Seven of the write-tier tools are pulled back to *confirm* by standing rules
   in `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
   `run_powershell`, `lock_workstation`, `send_email`, `make_phone_call`. Those
   destroy data, run arbitrary commands, send something that cannot be unsent,
   or — the newest addition — connect a real phone call with no on-device
-  confirmation screen of its own to catch a misheard number. Everything else
-  new in §2.15 (answering, hanging up, media control, alarms) stays plain
-  `write`: either time-sensitive enough that a confirm prompt would defeat the
-  point (an unanswered call goes to voicemail while you're confirming), or
-  trivially reversible.
+  confirmation screen of its own to catch a misheard number. `call_contact`
+  is a deliberately separate tool from `make_phone_call` rather than an
+  optional argument on it, specifically so it can sit *outside* that standing
+  rule: it only ever dials a number already saved under a real name in the
+  phone's own contacts, a materially different risk from a number the model
+  transcribed from speech — and the gate applies a tier per tool, not per
+  argument, so two different confirmation behaviours could not have shared
+  one tool. Everything else new in §2.15 (answering, hanging up, media
+  control, alarms) stays plain `write`: either time-sensitive enough that a
+  confirm prompt would defeat the point (an unanswered call goes to voicemail
+  while you're confirming), or trivially reversible.
 
   **Tool groups whose credentials are missing are not registered at all**
   (`_REQUIRES` in the registry). Every schema is re-sent on every API call, so
@@ -1253,6 +1259,34 @@ output has no escaping, so fields are split on the *next field name* via
 lookahead rather than on `", "`, which appears freely inside real message
 bodies. Call log rows and the contacts table parse the same way.
 
+**Two more parsing bugs, both found by actually running this against a real
+phone — mocked tests never exercise a real device's own quirks.** First:
+`content query`'s comma-separated `--projection a,b,c` works for
+`content://sms/inbox` on the test device but fails outright for
+`content://call_log/calls` ("Invalid column a,b,c", the whole string taken as
+one literal column name) and for the contacts provider ("Non-token detected
+in 'a,b'", a stricter tokenizer rejecting it even with a space after the
+comma) — meaning contact resolution and the entire call log were broken from
+the moment they shipped, working only in unit tests whose fakes don't
+reproduce a real tokenizer. A colon-separated projection (`a:b:c`) works
+identically across all three providers, so that is what every projection
+here uses now. The contacts provider had a second, independent gotcha on top:
+its friendly `number` column alias does not resolve through the raw `content`
+CLI at all ("Invalid column number") even once the separator is fixed — the
+real column is `data1`, the generic key-value slot `ContactsContract` uses
+for a phone-type row's number.
+
+Second: a message body can contain a literal embedded newline — routine for
+a multi-line bank SMS ("Sent Rs.60.00\nFrom HDFC Bank A/C...\nRef 123...").
+Splitting `content query`'s whole output on every `\n`, as if a newline
+always meant "next row," broke one logical row into several that no longer
+matched `_ROW` — truncating the body *and* silently dropping whatever field
+came after the break, which for SMS is `date`, so every affected message
+read back as 1 January 1970. `_rows()` now splits only on a newline that is
+immediately followed by the next `Row: N ` marker, and both `_ROW` and
+`_FIELD` run with `re.DOTALL` so a field's captured value can itself span
+several lines.
+
 **Contact names are resolved, not stored.** `read_sms` and `read_call_log`
 label a sender or caller with a name from `content://com.android.contacts`
 when one matches — normalising both sides to the last 10 digits so "+91
@@ -1261,6 +1295,13 @@ regardless of formatting. The lookup is best-effort and cached in-process for
 ten minutes per (adb path, device serial): a phone with contacts read
 blocked, or none saved, degrades to showing the raw number rather than
 failing SMS or call log reading, which do not depend on it succeeding.
+`find_contact` (behind `call_contact`, below) runs the same lookup the other
+direction — name to number — with a two-pass match: the query as a literal
+substring of the saved name first, falling back to matching on individual
+*words* when that finds nothing, since natural speech adds relationship
+words a saved name often doesn't have at all. The case that motivated the
+fallback is a real one: a contact saved as bare "Ancy", called "Ancy Mom" out
+loud — not a substring match, but the two share the word "ancy".
 
 `latest_code` prefers a message that says it is a code over a bare number,
 because the first number in an SMS is very often an order id or an amount. The
@@ -1274,10 +1315,11 @@ separately with `exec-out screencap -p`, in binary mode, and does its own
 error handling instead.
 
 **Calls, media, and alarms — real device control, not just reading.**
-`make_phone_call` / `answer_phone_call` / `hang_up_phone_call` go through the
-standard `ACTION_CALL` intent and the `KEYCODE_CALL`/`KEYCODE_ENDCALL` key
-events — the same key press ends an active call or rejects a ringing one,
-matching a physical end-call button. `play_music_on_phone` /
+`make_phone_call` / `call_contact` / `answer_phone_call` / `hang_up_phone_call`
+go through the standard `ACTION_CALL` intent and the
+`KEYCODE_CALL`/`KEYCODE_ENDCALL` key events — the same key press ends an
+active call or rejects a ringing one, matching a physical end-call button.
+`play_music_on_phone` /
 `pause_music_on_phone` / `skip_track_on_phone` launch Spotify by package name
 (`monkey -p ... -c LAUNCHER`, deliberately not a hardcoded activity class,
 which is exactly the kind of internal detail that breaks across app updates)
@@ -1295,10 +1337,15 @@ labelled alarm, since Android has no separate public reminder intent.
 
 Only `make_phone_call` is pulled back to `confirm` by a standing rule (see the
 tool-count table above) — it connects immediately with no on-device
-confirmation screen of its own, unlike answering or hanging up, which are
-either time-sensitive enough that a confirm prompt would defeat the point (an
-unanswered call goes to voicemail while you're confirming) or trivially
-reversible.
+confirmation screen of its own, and dials a number the model transcribed from
+speech, which can be misheard. `call_contact` deliberately does *not* inherit
+that rule: resolving a name against the phone's own saved contacts, and only
+ever dialling when exactly one match comes back, is a different and lower
+risk than a raw number — the whole failure mode `confirm` exists to catch
+(the wrong digits) can't happen once the target is a saved contact matched
+unambiguously. Answering and hanging up stay plain `write` for the same
+"confirm would defeat the point" reason as before (an unanswered call goes to
+voicemail while you're confirming), or because they're trivially reversible.
 
 **Every one of these embeds free text into a single command string handed to
 the phone's own shell — which makes each of them a command-injection surface,

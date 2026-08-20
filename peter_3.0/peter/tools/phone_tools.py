@@ -13,6 +13,15 @@ on-device confirmation of its own, unlike answering or hanging up, which are
 either time-sensitive (a confirm step would let the call go to voicemail
 first) or trivially reversible.
 
+`call_contact` is the one split *out* of that rule on purpose: it only ever
+dials a number already saved under a real name in the phone's own contacts —
+a materially different risk from a number the model transcribed from speech,
+which is what `make_phone_call` is for. Splitting these into two tools rather
+than one tool with an optional contact_name argument is what lets the policy
+gate apply a different tier to each; the gate decides per tool, not per
+argument, so a name-resolved call and a raw-digit call could not have shared
+one tool and two different confirmation behaviours.
+
 The one that earns its keep the most: `latest_code`. Peter can walk a
 checkout right up to the payment screen but cannot legally complete it — RBI
 rules put the two-factor step in your hands. Reading the code aloud so you
@@ -178,9 +187,56 @@ def save_phone_screenshot() -> str:
 
 
 @peter_tool(tier="write")
+def call_contact(contact_name: str) -> str:
+    """Call a saved contact by name.
+
+    Connects immediately — a real call, not a dial screen. Unlike
+    make_phone_call, this does not ask for confirmation first: it only ever
+    dials a number that is already saved under a real name in the phone's
+    own contacts, which is a materially different risk from a number the
+    model transcribed from speech. If the name matches more than one saved
+    number, nothing is dialled and the matches are listed so you can ask the
+    user which they meant — it never guesses between them.
+
+    Args:
+        contact_name: A saved contact's name, e.g. "Ancy" or "Ancy Mom" — an
+            exact phrase match is tried first, falling back to matching on
+            individual words, so a contact saved as bare "Ancy" is still
+            found by "Ancy Mom".
+    """
+    cfg = _cfg()
+    contact_name = contact_name.strip()
+    if not contact_name:
+        return "Give a contact name."
+
+    try:
+        matches = adb.find_contact(cfg, contact_name)
+    except PeterError as exc:
+        return exc.spoken()
+    if not matches:
+        return f"No saved contact matching {contact_name!r}."
+    if len(matches) > 1:
+        listing = "\n".join(f"{name} — {number}" for name, number in matches)
+        return f"That matches {len(matches)} contacts — ask which one:\n{listing}"
+
+    label, number = matches[0]
+    try:
+        adb.call_number(cfg, number)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Calling {label}."
+
+
+@peter_tool(tier="write")
 def make_phone_call(number: str) -> str:
-    """Call a phone number from the phone. Connects immediately — a real
-    call, not a dial screen the user still has to tap to send.
+    """Call a phone number directly. Connects immediately — a real call, not
+    a dial screen the user still has to tap to send.
+
+    If the user named a saved contact instead of speaking digits, use
+    call_contact — it resolves the name against the phone's contacts and
+    (unlike this tool) does not need confirmation first, since dialling an
+    already-saved number is materially safer than one transcribed from
+    speech.
 
     Args:
         number: The number to call, e.g. "+91 90000 00000". Digits and

@@ -466,11 +466,17 @@ question about it, the same way it can look at your desktop.
 
 **Acting** covers real device control now, not just SMS reading:
 
-- **Calls.** *"call Amma"* connects immediately — this one is held back by a
-  confirmation step (see [§6](#6-permissions)) since a misheard number
-  actually dials. *"answer it"* and *"hang up"* run straight away, since a
-  confirmation step would be pointless — an unanswered call goes to voicemail
-  while you're confirming.
+- **Calls.** *"call Amma"* looks Amma up in your saved contacts and, if
+  exactly one match comes back, dials straight away — no confirmation step,
+  since a saved contact matched unambiguously isn't the "misheard number"
+  risk the confirmation exists for. More than one contact matching means
+  nothing is dialled; you'll be asked which one. *"call 9876543210"* — an
+  actual number instead of a name — connects immediately too, but **is**
+  held back by a confirmation step (see [§6](#6-permissions)), since a
+  misheard digit sequence really can dial the wrong number. *"answer it"* and
+  *"hang up"* run straight away either way, since a confirmation step would
+  be pointless there — an unanswered call goes to voicemail while you're
+  confirming.
 - **Music.** *"play [something] on Spotify"* opens Spotify and, with a
   request, searches it; *"pause"* / *"next song"* send the phone's ordinary
   media keys, so they control whatever app is actually playing, Spotify or
@@ -593,8 +599,11 @@ run_powershell · lock_workstation · send_email · make_phone_call
 
 Destroy data, run arbitrary commands, send something to another person that
 cannot be unsent, or — `make_phone_call` — connect a real call with no
-on-device confirmation screen of its own. Change that list if you want,
-understanding the cost.
+on-device confirmation screen of its own. `call_contact` (calling a saved
+contact by name) is deliberately **not** on this list, even though it also
+dials immediately: it only ever calls a number matched unambiguously against
+your own saved contacts, which doesn't carry the "misheard number" risk this
+list exists to catch. Change the list if you want, understanding the cost.
 
 A refusal is not an error. Peter is told "the user declined", and adapts —
 apologises, offers an alternative, asks what you would prefer.
@@ -767,7 +776,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 <a name="9-complete-tool-reference"></a>
 ## 9. Complete tool reference
 
-122 tools. `[r]` read, `[w]` write, `[!]` always confirms.
+123 tools. `[r]` read, `[w]` write, `[!]` always confirms.
 
 **System** — `open_app` [w] · `list_files` [r] · `read_file` [r] ·
 `search_files` [r] · `write_file` [w] · `delete_file` [!] · `move_file` [w] ·
@@ -824,7 +833,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 
 **Phone** — `read_sms` [r] · `latest_code` [r] · `phone_status` [r] ·
 `read_call_log` [r] · `read_phone_screen` [r] · `make_phone_call` [!] ·
-`answer_phone_call` [w] · `hang_up_phone_call` [w] · `play_music_on_phone` [w] ·
+`call_contact` [w] · `answer_phone_call` [w] · `hang_up_phone_call` [w] · `play_music_on_phone` [w] ·
 `pause_music_on_phone` [w] · `skip_track_on_phone` [w] · `set_phone_alarm` [w] ·
 `stop_phone_alarm` [w] · `open_link_on_phone` [w] · `save_phone_screenshot` [w]
 
@@ -899,10 +908,18 @@ don't. There's no way to detect which case you're in short of trying it.
 this fails outright. `pause`/`next` are generic media keys and only do
 anything if some app on the phone is actually playing audio.
 
-**"call [name]" is asking for confirmation**
+**"call [a number]" is asking for confirmation**
 That's deliberate — `make_phone_call` is the one phone tool held back to
 `confirm` in `config.yml`'s `policy.standing_rules`, since it connects
-immediately with no on-device screen of its own. See [§6](#6-permissions).
+immediately with no on-device screen of its own, dialling digits transcribed
+from speech. See [§6](#6-permissions). Calling a saved contact by name
+(`call_contact`) is not held back this way — see the next entry.
+
+**"call [name]" lists several contacts instead of calling**
+`call_contact` never guesses between more than one match — it lists every
+contact whose name matches (as a phrase, or on a shared word if no phrase
+match exists) and asks which one, rather than picking. Say a more specific
+name, or add the missing contact's number directly with "call [the number]".
 
 **Costs look higher than expected**
 Ask for `spend_report`, which breaks down by model. If `cache_read` is 0 across

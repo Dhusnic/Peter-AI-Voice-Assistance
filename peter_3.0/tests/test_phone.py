@@ -63,6 +63,38 @@ def test_a_body_containing_the_field_separator_is_not_truncated(monkeypatch):
     assert adb.messages(phone_config())[0].body == body
 
 
+def test_a_body_containing_a_literal_newline_is_not_truncated(monkeypatch):
+    """Found on a real device: bank SMS routinely embed a raw newline in the
+    body ("Sent Rs.60.00\\nFrom HDFC Bank A/C...\\nRef 123..."). Splitting
+    the whole `content query` output on every '\\n' — as if a newline always
+    meant "next row" — broke one logical row into several that no longer
+    matched `_ROW`, truncating the body *and* silently dropping the `date`
+    field that came after it, which is why every affected message read back
+    as 1 Jan 1970."""
+    body = "Sent Rs.60.00\nFrom HDFC Bank A/C *3371\nRef 201234311186\nNot You? Call 18002586161"
+    when_ms = ms(5)
+    raw = (
+        f"Row: 0 address=VM-HDFCBK-T, body={body}, date={when_ms}\n"
+        f"Row: 1 address=OTHER, body=next message, date={ms(1)}\n"
+    )
+    fake_adb(monkeypatch, raw)
+
+    found = adb.messages(phone_config())
+
+    assert len(found) == 2
+    bank_message = next(m for m in found if m.sender == "VM-HDFCBK-T")
+    assert bank_message.body == body
+    assert bank_message.when is not None
+    assert bank_message.when.year > 1970
+
+
+def test_rows_splits_only_on_a_real_row_boundary(monkeypatch):
+    """Direct unit test of the splitting helper itself: a newline is only a
+    row boundary when followed by the next "Row: N " marker."""
+    raw = "Row: 0 a=1\nembedded\nnewline, b=2\nRow: 1 a=3, b=4\n"
+    assert adb._rows(raw) == ["Row: 0 a=1\nembedded\nnewline, b=2", "Row: 1 a=3, b=4"]
+
+
 def test_messages_come_back_newest_first(monkeypatch):
     fake_adb(monkeypatch, (
         f"Row: 0 address=A, body=older, date={ms(60)}\n"
@@ -419,7 +451,7 @@ def test_sms_sender_is_labelled_with_a_contact_name(monkeypatch):
     _routed_adb(monkeypatch, [
         ("content://sms", f"Row: 0 address=+919000000000, body=hi, date={ms(1)}\n"),
         ("content://com.android.contacts",
-         "Row: 0 display_name=Mom, number=+91 90000 00000\n"),
+         "Row: 0 display_name=Mom, data1=+91 90000 00000\n"),
     ])
 
     found = adb.messages(phone_config())
@@ -431,7 +463,7 @@ def test_sms_sender_is_labelled_with_a_contact_name(monkeypatch):
 def test_a_sender_with_no_matching_contact_falls_back_to_the_raw_address(monkeypatch):
     _routed_adb(monkeypatch, [
         ("content://sms", f"Row: 0 address=AX-BLINKIT, body=hi, date={ms(1)}\n"),
-        ("content://com.android.contacts", "Row: 0 display_name=Mom, number=+919000000000\n"),
+        ("content://com.android.contacts", "Row: 0 display_name=Mom, data1=+919000000000\n"),
     ])
 
     found = adb.messages(phone_config())
@@ -444,7 +476,7 @@ def test_call_log_falls_back_to_contacts_when_the_device_gives_no_name(monkeypat
     _routed_adb(monkeypatch, [
         ("content://call_log", f"Row: 0 number=+919000000000, name=NULL, type=1, "
                                f"date={ms(1)}, duration=30\n"),
-        ("content://com.android.contacts", "Row: 0 display_name=Mom, number=9000000000\n"),
+        ("content://com.android.contacts", "Row: 0 display_name=Mom, data1=9000000000\n"),
     ])
 
     assert adb.calls(phone_config())[0].name == "Mom"
@@ -468,6 +500,79 @@ def test_a_broken_contacts_read_does_not_break_sms_reading(monkeypatch):
 
     assert found[0].body == "hi"
     assert found[0].sender_name is None
+
+
+# --------------------------------------------------- calling a contact by name
+def test_find_contact_matches_case_insensitively_and_keeps_the_raw_number(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("content://com.android.contacts",
+         "Row: 0 display_name=Ancy Mom, data1=+91 90000 00000\n"),
+    ])
+
+    found = adb.find_contact(phone_config(), "ancy mom")
+
+    assert found == [("Ancy Mom", "+91 90000 00000")]
+
+
+def test_find_contact_returns_every_number_for_a_two_number_contact(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("content://com.android.contacts",
+         "Row: 0 display_name=Ancy Mom, data1=+91 90000 00000\n"
+         "Row: 1 display_name=Ancy Mom, data1=044 2345 6789\n"),
+    ])
+
+    found = adb.find_contact(phone_config(), "Ancy Mom")
+
+    assert len(found) == 2
+    assert {number for _name, number in found} == {"+91 90000 00000", "044 2345 6789"}
+
+
+def test_find_contact_matches_on_a_partial_name(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("content://com.android.contacts", "Row: 0 display_name=Ancy Mom, data1=9000000000\n"),
+    ])
+    assert adb.find_contact(phone_config(), "ancy") == [("Ancy Mom", "9000000000")]
+
+
+def test_find_contact_falls_back_to_word_matching_when_the_phrase_is_not_a_substring(monkeypatch):
+    """The real-world case that motivated the fallback: a contact saved as
+    bare "Ancy", called "Ancy Mom" out loud on a live phone. "Ancy Mom" is
+    not a substring of "Ancy", but the two share the word "ancy"."""
+    _routed_adb(monkeypatch, [
+        ("content://com.android.contacts", "Row: 0 display_name=Ancy, data1=+919976197907\n"),
+    ])
+
+    found = adb.find_contact(phone_config(), "Ancy Mom")
+
+    assert ("Ancy", "+919976197907") in found
+
+
+def test_find_contact_prefers_an_exact_phrase_match_over_the_word_fallback(monkeypatch):
+    """When the phrase does match directly, don't also drag in every other
+    contact that merely shares one word with it."""
+    _routed_adb(monkeypatch, [
+        ("content://com.android.contacts",
+         "Row: 0 display_name=Ancy Mom, data1=1111111111\n"
+         "Row: 1 display_name=Ancy Other, data1=2222222222\n"),
+    ])
+
+    found = adb.find_contact(phone_config(), "Ancy Mom")
+
+    assert found == [("Ancy Mom", "1111111111")]
+
+
+def test_find_contact_returns_nothing_for_no_match(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("content://com.android.contacts", "Row: 0 display_name=Ancy Mom, data1=9000000000\n"),
+    ])
+    assert adb.find_contact(phone_config(), "nobody") == []
+
+
+def test_find_contact_treats_empty_text_as_no_search(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("content://com.android.contacts", "Row: 0 display_name=Ancy Mom, data1=9000000000\n"),
+    ])
+    assert adb.find_contact(phone_config(), "   ") == []
 
 
 def test_the_where_clause_query_stays_the_first_adb_call(monkeypatch):
@@ -745,6 +850,96 @@ def test_make_phone_call_tool_reports_a_bad_number_speakably(container, monkeypa
     result = registry.get_record("make_phone_call").raw_fn(number="not a number")
 
     assert "Something went wrong" in result
+
+
+def test_make_phone_call_is_not_confirm_exempt(container):
+    """Regression guard for the actual reason call_contact exists: a raw,
+    possibly-mis-transcribed number must keep needing confirmation. If this
+    ever starts passing with make_phone_call missing from standing_rules,
+    someone relaxed the wrong tool."""
+    assert container.config.policy.standing_rules.get("make_phone_call") == "confirm"
+
+
+def test_call_contact_tool_resolves_a_single_matching_contact(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "find_contact", lambda cfg, name: [("Ancy", "9976197907")])
+    dialled = {}
+    monkeypatch.setattr(adb, "call_number", lambda cfg, number: dialled.setdefault("number", number))
+
+    result = registry.get_record("call_contact").raw_fn(contact_name="Ancy Mom")
+
+    assert dialled["number"] == "9976197907"
+    assert "Ancy" in result
+
+
+def test_call_contact_tool_is_not_in_the_confirm_standing_rules(container):
+    """The whole point: an unambiguous, name-resolved call does not need the
+    on-device-equivalent confirmation step make_phone_call requires."""
+    assert container.config.policy.standing_rules.get("call_contact") != "confirm"
+
+
+def test_call_contact_tool_asks_which_contact_when_ambiguous(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "find_contact", lambda cfg, name: [
+        ("Ancy Mom", "9000000000"), ("Ancy Mom", "0442345678"),
+    ])
+    called = []
+    monkeypatch.setattr(adb, "call_number", lambda cfg, number: called.append(number))
+
+    result = registry.get_record("call_contact").raw_fn(contact_name="Ancy Mom")
+
+    assert called == []  # nothing dialled while ambiguous
+    assert "2 contacts" in result
+    assert "9000000000" in result and "0442345678" in result
+
+
+def test_call_contact_tool_reports_no_matching_contact(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "find_contact", lambda cfg, name: [])
+
+    result = registry.get_record("call_contact").raw_fn(contact_name="Nobody")
+
+    assert "No saved contact" in result
+
+
+def test_call_contact_tool_requires_a_name(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    result = registry.get_record("call_contact").raw_fn(contact_name="")
+
+    assert "Give a contact name" in result
+
+
+def test_call_contact_tool_reports_a_lookup_failure_speakably(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    def boom(cfg, name):
+        raise IntegrationError("adb is not installed", service="phone",
+                               user_action="Install Android Platform Tools.")
+
+    monkeypatch.setattr(adb, "find_contact", boom)
+
+    result = registry.get_record("call_contact").raw_fn(contact_name="Ancy")
+
+    assert "Install Android Platform Tools" in result
 
 
 def test_answer_phone_call_tool_reports_success(container, monkeypatch):
