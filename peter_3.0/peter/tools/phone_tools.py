@@ -187,6 +187,35 @@ def save_phone_screenshot() -> str:
 
 
 @peter_tool(tier="write")
+def transcribe_phone_voice_note() -> str:
+    """Pull the most recent voice note from the phone and transcribe it.
+
+    Looks in WhatsApp's voice-note folder and common recorder-app folders
+    (configurable as integrations.phone.voice_note_dirs), copies the newest
+    file over ADB, and transcribes it with the same local faster-whisper
+    pipeline already used for meeting recordings — the audio never leaves
+    this machine for that step.
+    """
+    from peter.meeting_notes import transcribe
+
+    cfg = _cfg()
+    config = services().config
+    try:
+        local_path = adb.pull_latest_file(cfg, cfg.voice_note_dirs, config.phone_voice_notes_dir)
+    except PeterError as exc:
+        return exc.spoken()
+
+    try:
+        text = transcribe(local_path)
+    except Exception as exc:
+        return f"Saved {local_path.name}, but could not transcribe it: {exc}"
+
+    if not text.strip():
+        return f"Saved {local_path.name}, but transcription came back empty."
+    return text
+
+
+@peter_tool(tier="write")
 def call_contact(contact_name: str) -> str:
     """Call a saved contact by name.
 

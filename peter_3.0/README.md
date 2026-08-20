@@ -13,13 +13,13 @@ mic ─▶ openWakeWord ─▶ faster-whisper ─▶  LLM  ─▶ Piper ─▶ s
  CLI ────────────────────────────────────▶ │ ◀──────────── Telegram
                               Claude · GPT · Gemini
                                            │
-                                     policy gate ──▶ 110 tools
+                                     policy gate ──▶ 129 tools
                                            │               │
                                      audit log       ┌─────┴───────────────┐
                                                      │                     │
                                             SQLite memory            integrations
                                             APScheduler       mail · calendar · browser
-                                                              desktop · dev · phone · docs
+                                                       desktop · dev · phone · docs · weather
 ```
 
 **[→ USER MANUAL](docs/USER_MANUAL.md)** — everything Peter can do, how to
@@ -364,7 +364,7 @@ Three rules:
 | [peter/integrations/browser/](peter/integrations/browser/) | Playwright session, extraction, rate limiting, bot detection |
 | [.../browser/interlock.py](peter/integrations/browser/interlock.py) | Refuses any click that commits money |
 | [peter/briefing.py](peter/briefing.py) | The daily briefing, assembled section by section |
-| [peter/tools/](peter/tools/) | The 110 tools themselves |
+| [peter/tools/](peter/tools/) | The 129 tools themselves |
 | [peter/voice/](peter/voice/) | Mic, wake word, Whisper, TTS |
 | [peter/main.py](peter/main.py) | Wiring, CLI, and the turn loop |
 

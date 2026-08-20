@@ -28,6 +28,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from peter.integrations.mail.client import MailClient
     from peter.memory.store import MemoryStore
     from peter.policy.audit import AuditLog
+    from peter.deliveries import DeliveryStore
+    from peter.expenses import ExpenseStore
     from peter.price_watch import WatchStore
     from peter.scheduler.jobs import Scheduler
     from peter.spend import SpendLog
@@ -62,6 +64,8 @@ class ServiceContainer:
         self._workspaces: Optional["WorkspaceStore"] = None
         self._spend: Optional["SpendLog"] = None
         self._docs: Optional["DocIndex"] = None
+        self._expenses: Optional["ExpenseStore"] = None
+        self._deliveries: Optional["DeliveryStore"] = None
 
     # ------------------------------------------------------------ eager
     def require_memory(self) -> "MemoryStore":
@@ -171,6 +175,22 @@ class ServiceContainer:
                 self._docs = DocIndex(self.config.docs_db_path, self.config.integrations.docs)
         return self._docs
 
+    def expenses(self) -> "ExpenseStore":
+        with self._lock:
+            if self._expenses is None:
+                from peter.expenses import ExpenseStore
+
+                self._expenses = ExpenseStore(self.config.db_path)
+        return self._expenses
+
+    def deliveries(self) -> "DeliveryStore":
+        with self._lock:
+            if self._deliveries is None:
+                from peter.deliveries import DeliveryStore
+
+                self._deliveries = DeliveryStore(self.config.db_path)
+        return self._deliveries
+
     def _require_google(self) -> None:
         cfg = self.config.integrations.google
         if not cfg.enabled:
@@ -196,7 +216,8 @@ class ServiceContainer:
                 self._browser.close()
             except Exception:
                 log.debug("browser close failed", exc_info=True)
-        for store in (self._watches, self._workspaces, self._spend, self._docs):
+        for store in (self._watches, self._workspaces, self._spend, self._docs,
+                     self._expenses, self._deliveries):
             if store is not None:
                 try:
                     store.close()

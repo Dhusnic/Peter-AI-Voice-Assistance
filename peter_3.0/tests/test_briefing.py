@@ -89,6 +89,34 @@ def test_briefing_includes_every_section(briefing_container):
     assert "submit assignment" in text
 
 
+def test_weather_section_appears_when_included_and_configured(briefing_container, monkeypatch):
+    from peter.integrations import weather
+
+    wire(briefing_container)
+    briefing_container.config.integrations.briefing.include = ["weather"]
+    monkeypatch.setattr(weather, "current", lambda cfg: "Chennai: clear sky, 31C.")
+
+    text = build_briefing()
+
+    assert "Chennai: clear sky, 31C." in text
+
+
+def test_weather_section_degrades_gracefully_when_not_configured(briefing_container):
+    """No location set — must join the "not set up" bucket, not crash the
+    whole briefing the way build_briefing's docstring promises for every
+    other section."""
+    wire(briefing_container)
+    briefing_container.config.integrations.briefing.include = ["weather"]
+    briefing_container.config.integrations.weather.location = ""
+    briefing_container.config.integrations.weather.latitude = 0.0
+    briefing_container.config.integrations.weather.longitude = 0.0
+
+    text = build_briefing()  # must not raise
+
+    assert "weather" in text.lower()
+    assert "not set up" in text
+
+
 def test_greeting_matches_the_time_of_day(briefing_container):
     wire(briefing_container)
     text = build_briefing()

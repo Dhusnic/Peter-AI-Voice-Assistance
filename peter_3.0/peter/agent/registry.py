@@ -176,6 +176,9 @@ TOOL_MODULES = (
     "peter.tools.dev_tools",
     "peter.tools.telegram_tools",
     "peter.tools.phone_tools",
+    "peter.tools.expense_tools",
+    "peter.tools.delivery_tools",
+    "peter.tools.weather_tools",
 )
 
 # Modules whose tools cannot possibly succeed without credentials, and the
@@ -210,6 +213,14 @@ _REQUIRES = {
         lambda c: c.integrations.docs.enabled,
     "peter.tools.vision_tools":
         lambda c: c.agent.vision.enabled,
+    # Both read SMS over ADB, so neither can do anything without the phone
+    # integration also switched on.
+    "peter.tools.expense_tools":
+        lambda c: c.integrations.expenses.enabled and c.integrations.phone.enabled,
+    "peter.tools.delivery_tools":
+        lambda c: c.integrations.deliveries.enabled and c.integrations.phone.enabled,
+    "peter.tools.weather_tools":
+        lambda c: c.integrations.weather.enabled,
 }
 
 

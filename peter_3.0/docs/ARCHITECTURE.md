@@ -195,6 +195,8 @@ flowchart LR
 | **Development** | "What's waiting on me?" / "Write my standup" | `git` and `gh` as subprocesses, so Peter never holds a GitHub token — `gh auth login` already keeps it in the OS keychain. Read-only by design: no commit, push or checkout tool. The standup is assembled from commits, calendar, focus sessions and to-dos, and the model is told to phrase that material and invent nothing — see §2.13. |
 | **Documents** | "What did we agree the retry budget was?" | FTS5 over folders you point at, incremental on (size, mtime). `search_docs` is a SQLite query and free; `ask_docs` spends one call to turn the matching passages into an answer cited back to the file, and says so plainly when they do not contain one — see §2.14. |
 | **Cost** | "How much have I spent this week?" | Every turn is appended to a ledger, derived by subtracting cumulative counters. Stored in USD (what vendors bill in), displayed in rupees — storing the converted figure would freeze each day's exchange rate into history. An optional daily cap warns or blocks, checked *before* a turn, since that is the only moment it can stop anything — see §2.17. |
+| **Expenses & deliveries** | "Scan my bank texts" / "what did I spend on food" / "what's still on the way" | Bank/UPI and courier SMS parsed heuristically into two small ledgers, reusing the same SMS-reading pipeline §2.15 built for OTPs. On-demand only, no background sweep — see §2.18. |
+| **Weather** | "What's the weather" / "weather in Mumbai" | Open-Meteo — free, no API key. A city name is geocoded once and cached for the session; folds into the morning briefing when added to `briefing.include` — see §2.18. |
 
 ### 1.3 What is deliberately **not** built yet
 
@@ -531,7 +533,7 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **123 tools currently registered**, split by permission tier:
+- **129 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
@@ -552,8 +554,11 @@ flowchart LR
 | `recorder_tools.py` | 4 | 3 | record, transcribe, summarise, read back |
 | `dev_tools.py` | 7 | 0 | git, PRs, CI, work log, standup |
 | `telegram_tools.py` | 1 | 1 | send to your phone, bridge status |
-| `phone_tools.py` | 5 | 11 | SMS, one-time code, call log, phone screen, phone status / open a link, save a screenshot, call a contact/make/answer/end a call, Spotify play/pause/skip, set/dismiss a phone alarm |
-| **Total** | **60** | **63** | |
+| `phone_tools.py` | 5 | 12 | SMS, one-time code, call log, phone screen, phone status / open a link, save a screenshot, transcribe a voice note, call a contact/make/answer/end a call, Spotify play/pause/skip, set/dismiss a phone alarm |
+| `expense_tools.py` | 1 | 1 | scan bank/UPI SMS, report spending |
+| `delivery_tools.py` | 1 | 1 | scan courier SMS, list pending shipments |
+| `weather_tools.py` | 1 | 0 | current weather (Open-Meteo, no key needed) |
+| **Total** | **63** | **66** | |
 
   Seven of the write-tier tools are pulled back to *confirm* by standing rules
   in `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
@@ -1461,6 +1466,90 @@ worse than not offering one.
 
 ---
 
+### 2.18 Horizontal additions — `peter/expenses.py`, `peter/deliveries.py`, `peter/integrations/weather.py`
+
+Four features added in one pass specifically to reuse infrastructure rather
+than start fresh: two lean on the SMS pipeline `§2.15` had already read and
+hardened, one is a config-and-tools wrapper around an existing free API, one
+reuses a pull-and-transcribe path built for something else entirely.
+
+**Expense and delivery tracking both parse the same SMS stream two different
+ways.** `expenses.py`'s `parse_transaction()` looks for an amount plus a
+debit/credit verb ("sent", "debited", "credited", "received") and pulls a
+counterparty, a bank name and the bank's own reference number where present;
+`deliveries.py`'s `parse_shipment()` looks for a shipment-status verb
+("shipped", "out for delivery", "delivered") plus a carrier name and an AWB
+number. Both are explicit about being heuristic, not authoritative — Indian
+bank and courier SMS have no shared format, formats vary bank-to-bank and
+carrier-to-carrier, and an unrecognised message is silently skipped rather
+than guessed at, which is the same failure-mode choice `_contacts_cache`
+made in §2.15 (degrade the feature, don't guess at the data). A message
+counted wrong is worse than one not counted at all.
+
+**Two parsing bugs, both caught by testing against real messages captured
+earlier this session, not by inventing test fixtures.** A first
+`_COUNTERPARTY_FROM` implementation stopped only at a comma or newline; a
+real credit SMS ("...from RAVI KUMAR on 20-08-26. Ref No 998877.") has
+neither before the date clause, so the match ran to the end of the string
+and swallowed the date and reference number into the counterparty name.
+Fixed by adding a period and an `on <date>`/`Ref` lookahead to the stop
+condition. Separately, `_FUTURE_HINTS` originally included the bare string
+`"e-mandate"` to exclude a future-dated mandate notice ("Rs.1000.00 will be
+deducted on...") — which also excluded a genuinely completed e-mandate debit
+*confirmation*, a real transaction that should count. Narrowed to the
+future-tense phrases themselves ("will be deducted", "will be debited",
+"scheduled to be", "is due on").
+
+**Delivery status only ever advances, never regresses.** A shipment
+produces several SMS over its life — shipped, then out for delivery, then
+delivered — arriving in that order most of the time but not guaranteed to.
+`DeliveryStore.upsert()` keys on the tracking number when the SMS has one,
+and only writes a new status if it outranks (`_STATUS_RANK`) what's already
+stored, so a late-arriving "shipped" message after a "delivered" one has
+already landed cannot un-deliver a package. Without a tracking number (some
+carriers' SMS don't include one), the fallback key is `carrier + day`,
+which cannot tell two same-day shipments from the same carrier apart — an
+accepted, documented gap rather than a silent one.
+
+Both are on-demand only in this version — `scan_bank_sms` / `scan_delivery_sms`
+plus `expense_report` / `pending_deliveries`, no background sweep — since a
+ledger silently mis-parsing or double-counting unattended is a worse failure
+mode than one that only runs when asked. Both need `integrations.phone.enabled`
+as well as their own flag, gated in the registry's `_REQUIRES` the same way
+as every other credential-dependent tool group.
+
+**Weather is a thin wrapper: no client class, no state beyond an in-process
+geocoding cache.** `peter/integrations/weather.py` is the one integration in
+this codebase that isn't a package — every other one (`mail/`, `google/`,
+`telegram/`, `phone/`, `dev/`, `desktop/`) holds a stateful connection or has
+several files; this is one stateless module making two possible HTTP calls
+(geocode, then forecast) via `urllib`, matching the stdlib-only pattern
+already established by `telegram/api.py`. Open-Meteo specifically because it
+needs no API key — the one integration here that doesn't need a line in
+`.env`. A location name is geocoded once and cached for the process
+lifetime (`_geocode_cache`, keyed on the lowercased name) — coordinates for
+a named place do not go stale within a session, so a second lookup of the
+same city is free. `get_weather(location=...)` accepts an ad-hoc override
+without touching config, geocoded and cached the same way. Folded into the
+morning briefing (`briefing.py`'s `_SECTIONS["weather"]`) behind the same
+opt-in-via-`include` and graceful-degradation machinery every other optional
+section already uses — an unconfigured location lands in the "not set up"
+bucket via `NotConfiguredError`, exactly like an unconfigured `waiting_on`
+or `pull_requests` section, not a crash.
+
+**Voice-note transcription needed almost no new code at all.**
+`transcribe_phone_voice_note` chains two pipelines that already existed
+end-to-end: `adb.pull_latest_file()` (built for `save_phone_screenshot`,
+already generic over a list of remote directories and a local destination —
+only the directory list changes, to WhatsApp's voice-note folder and common
+recorder-app paths) into `meeting_notes.transcribe()` (built for meeting
+recordings, taking any audio `Path` and returning text via local
+faster-whisper — no meeting-specific logic in the function itself). The
+whole tool is two existing calls in sequence with error handling around
+each; the only genuinely new surface is the `voice_note_dirs` config list.
+
+---
+
 ## Appendix — file map
 
 ```
@@ -1501,6 +1590,8 @@ peter_3.0/
 │   ├── docs_index.py            # §2.14 FTS5 over folders, cited answers
 │   ├── workspace.py             # §2.14 save / restore open applications
 │   ├── spend.py                 # §2.17 the cost ledger and the daily cap
+│   ├── expenses.py               # §2.18 bank/UPI SMS -> personal spend ledger
+│   ├── deliveries.py             # §2.18 courier SMS -> shipment tracker
 │   ├── ui/
 │   │   ├── progress.py           # §2.9b CLI status line, branded spinners
 │   │   ├── confirm.py            # voice-mode spoken yes/no confirmer
@@ -1512,6 +1603,7 @@ peter_3.0/
 │   │   ├── telegram/             # §2.11 Bot API over urllib, push()
 │   │   ├── dev/                  # §2.13 git + gh, both as subprocesses
 │   │   ├── phone/                # §2.15 ADB: SMS, calls, contacts, screen, files
+│   │   ├── weather.py            # §2.18 Open-Meteo, no API key, geocode cache
 │   │   └── desktop/              # §2.6b apps, bookmarks, YouTube, media, folders
 │   │       ├── browsers.py        # open_url + bookmark reading (Firefox/Chromium)
 │   │       ├── matching.py        # fuzzy rank() for "open the staging dashboard"

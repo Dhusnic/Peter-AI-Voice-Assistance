@@ -1214,6 +1214,84 @@ def test_save_phone_screenshot_tool_reports_the_saved_filename(container, monkey
     assert "shot.png" in result
 
 
+def test_transcribe_phone_voice_note_tool_returns_the_transcript(container, monkeypatch, tmp_path):
+    from peter.agent import registry
+    import peter.meeting_notes as meeting_notes
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    audio_path = tmp_path / "note.opus"
+    monkeypatch.setattr(
+        adb, "pull_latest_file", lambda cfg, dirs, local_dir: audio_path
+    )
+    monkeypatch.setattr(meeting_notes, "transcribe", lambda path: "call me back")
+
+    result = registry.get_record("transcribe_phone_voice_note").raw_fn()
+
+    assert result == "call me back"
+
+
+def test_transcribe_phone_voice_note_tool_reports_a_pull_failure_speakably(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    def boom(cfg, dirs, local_dir):
+        raise IntegrationError(
+            "no files found", service="phone",
+            user_action="Record a voice note on the phone first.",
+        )
+
+    monkeypatch.setattr(adb, "pull_latest_file", boom)
+
+    result = registry.get_record("transcribe_phone_voice_note").raw_fn()
+
+    assert "Record a voice note on the phone first" in result
+
+
+def test_transcribe_phone_voice_note_tool_reports_a_transcription_failure(
+    container, monkeypatch, tmp_path
+):
+    from peter.agent import registry
+    import peter.meeting_notes as meeting_notes
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    audio_path = tmp_path / "note.opus"
+    monkeypatch.setattr(adb, "pull_latest_file", lambda cfg, dirs, local_dir: audio_path)
+
+    def boom(path):
+        raise RuntimeError("model failed to load")
+
+    monkeypatch.setattr(meeting_notes, "transcribe", boom)
+
+    result = registry.get_record("transcribe_phone_voice_note").raw_fn()
+
+    assert "could not transcribe" in result
+    assert "note.opus" in result
+
+
+def test_transcribe_phone_voice_note_tool_reports_an_empty_transcript(
+    container, monkeypatch, tmp_path
+):
+    from peter.agent import registry
+    import peter.meeting_notes as meeting_notes
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    audio_path = tmp_path / "note.opus"
+    monkeypatch.setattr(adb, "pull_latest_file", lambda cfg, dirs, local_dir: audio_path)
+    monkeypatch.setattr(meeting_notes, "transcribe", lambda path: "   ")
+
+    result = registry.get_record("transcribe_phone_voice_note").raw_fn()
+
+    assert "transcription came back empty" in result
+
+
 def test_read_phone_screen_tool_uses_the_vision_pipeline(container, monkeypatch):
     from peter.agent import registry
 

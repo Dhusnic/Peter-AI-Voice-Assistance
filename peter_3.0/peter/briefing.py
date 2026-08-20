@@ -121,6 +121,20 @@ def _waiting_on_section() -> str:
     return spoken_summary(items, limit=3) if items else ""
 
 
+def _weather_section() -> str:
+    """The day's weather. Opt-in via integrations.briefing.include, and
+    quietly skips itself if integrations.weather has no location set —
+    reported as "not set up" like every other optional section, not as an
+    error."""
+    from peter.core.services import services
+    from peter.integrations import weather
+
+    cfg = services().config.integrations.weather
+    if not cfg.enabled:
+        return ""
+    return weather.current(cfg)
+
+
 def _prs_section() -> str:
     """Reviews requested of you. Opt-in for the same reason."""
     from peter.core.services import services
@@ -143,6 +157,7 @@ _SECTIONS = {
     "todos": lambda cfg: _todos_section(),
     "waiting_on": lambda cfg: _waiting_on_section(),
     "pull_requests": lambda cfg: _prs_section(),
+    "weather": lambda cfg: _weather_section(),
 }
 
 

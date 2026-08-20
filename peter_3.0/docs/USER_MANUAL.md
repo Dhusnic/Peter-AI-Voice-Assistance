@@ -30,6 +30,8 @@ to do when something is not working. For *how it is built*, see
    - [4.14 Your phone — Telegram](#414-your-phone--telegram)
    - [4.15 Your phone — calls, music, alarms and SMS (ADB)](#415-your-phone--sms-over-adb)
    - [4.16 Cost and models](#416-cost-and-models)
+   - [4.17 Expenses and deliveries](#417-expenses-and-deliveries)
+   - [4.18 Weather](#418-weather)
 5. [What Peter does without being asked](#5-what-peter-does-without-being-asked)
 6. [Permissions — what stops and asks](#6-permissions)
 7. [Setup guides for each integration](#7-setup-guides)
@@ -538,6 +540,56 @@ mid-sentence is worse than no budget.
 
 ---
 
+<a name="417-expenses-and-deliveries"></a>
+### 4.17 Expenses and deliveries
+
+*Needs [phone SMS reading](#75-phone-sms-over-adb) switched on. On-demand only —
+nothing runs in the background.*
+
+> "scan my bank texts"
+> **"how much have I spent this month"**
+> "what did I spend on Swiggy"
+> "scan for delivery updates"
+> "what's still on the way"
+
+Two small ledgers, both built by parsing SMS — the same pipeline that
+already reads OTPs. *"Scan my bank texts"* reads recent SMS, picks out the
+ones that look like a completed bank/UPI transaction, and adds anything new
+to a spend ledger; *"scan for delivery updates"* does the same for courier
+SMS, tracking each shipment's status forward (shipped → out for delivery →
+delivered) as new messages come in.
+
+**Run the scan before asking for a report** — `expense_report` and
+`pending_deliveries` only ever describe what has already been scanned, they
+do not read SMS themselves. Both scans are safe to run repeatedly: an
+already-recorded transaction or shipment update is never counted twice.
+
+> This is a **rough running total, not an accountant.** Indian bank and
+> courier SMS have no shared format — every bank and every carrier phrases
+> things slightly differently — so parsing is heuristic. It errs toward
+> under-counting: a message it doesn't recognise is silently skipped rather
+> than guessed at. Cross-check against your actual bank statement for
+> anything that matters.
+
+<a name="418-weather"></a>
+### 4.18 Weather
+
+*Off until a location is set. [Setup](#78-weather).*
+
+> **"what's the weather"**
+> "weather in Mumbai"
+
+Current conditions via Open-Meteo — free, no API key, no signup. A city
+name is geocoded once and the coordinates cached for the session, so asking
+again costs nothing extra. Naming a city in the question ("weather in
+Mumbai") checks that place instead of the configured default, without
+changing config.
+
+Add `weather` to `integrations.briefing.include` to fold it into the
+morning briefing.
+
+---
+
 <a name="5-what-peter-does-without-being-asked"></a>
 ## 5. What Peter does without being asked
 
@@ -784,6 +836,31 @@ this is once per site.
 
 ---
 
+<a name="78-weather"></a>
+### 7.8 Weather — 1 minute
+
+```yaml
+integrations:
+  weather:
+    location: "Chennai"
+```
+
+That's it — no key, no signup. Or skip geocoding entirely by setting
+coordinates directly:
+
+```yaml
+integrations:
+  weather:
+    location: ""
+    latitude: 13.08
+    longitude: 80.27
+```
+
+Expenses and deliveries need nothing beyond [phone SMS reading](#75-phone-sms-over-adb)
+already being switched on — no separate setup step.
+
+---
+
 <a name="8-command-line-reference"></a>
 ## 8. Command-line reference
 
@@ -811,7 +888,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 <a name="9-complete-tool-reference"></a>
 ## 9. Complete tool reference
 
-123 tools. `[r]` read, `[w]` write, `[!]` always confirms.
+129 tools. `[r]` read, `[w]` write, `[!]` always confirms.
 
 **System** — `open_app` [w] · `list_files` [r] · `read_file` [r] ·
 `search_files` [r] · `write_file` [w] · `delete_file` [!] · `move_file` [w] ·
@@ -870,7 +947,14 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 `read_call_log` [r] · `read_phone_screen` [r] · `make_phone_call` [!] ·
 `call_contact` [w] · `answer_phone_call` [w] · `hang_up_phone_call` [w] · `play_music_on_phone` [w] ·
 `pause_music_on_phone` [w] · `skip_track_on_phone` [w] · `set_phone_alarm` [w] ·
-`stop_phone_alarm` [w] · `open_link_on_phone` [w] · `save_phone_screenshot` [w]
+`stop_phone_alarm` [w] · `open_link_on_phone` [w] · `save_phone_screenshot` [w] ·
+`transcribe_phone_voice_note` [w]
+
+**Expenses** — `scan_bank_sms` [w] · `expense_report` [r]
+
+**Deliveries** — `scan_delivery_sms` [w] · `pending_deliveries` [r]
+
+**Weather** — `get_weather` [r]
 
 **Desktop** — `open_url` [w] · `open_website` [w] · `open_named_site` [w] ·
 `play_youtube` [w] · `control_playback` [w] · `search_bookmarks` [r] ·
@@ -975,6 +1059,17 @@ into the system prompt.
 `data/audit.jsonl` has one line per tool call with arguments and results.
 `data/peter.log` has the full application log.
 
+**`expense_report` / `pending_deliveries` say nothing is tracked**
+They only report what's already been scanned — run `scan_bank_sms` or
+`scan_delivery_sms` first. A real transaction/shipment can also simply not
+match the parser's patterns; see [§4.17](#417-expenses-and-deliveries) for
+why that's a deliberate trade-off, not a bug to report.
+
+**`get_weather` says it could not find a place**
+Check the spelling, or be more specific (a well-known city name works best;
+a very small town might not be in Open-Meteo's geocoding data at all — set
+`latitude`/`longitude` directly in that case).
+
 ---
 
 <a name="11-privacy"></a>
@@ -985,8 +1080,8 @@ What stays on this machine, always:
 - **Wake-word detection.** No audio leaves the machine until the wake word fires.
 - **Meeting audio and transcription.** faster-whisper runs on your CPU. Only the
   final text summary is a model call.
-- **Memory, documents, price watches, workspaces, the spend ledger, the audit
-  log.** All local SQLite in `data/`.
+- **Memory, documents, price watches, workspaces, the spend ledger, the
+  expense and delivery ledgers, the audit log.** All local SQLite in `data/`.
 - **Site passwords.** Peter never handles them; you log in by hand and the
   browser profile is reused.
 - **GitHub and phone credentials.** Held by `gh` and by ADB's per-machine
@@ -1004,6 +1099,14 @@ Phone commands (calls, media, alarms, SMS/call-log reads) travel over the
 USB/ADB connection between this machine and the handset only — nothing about
 *how* they're sent goes near your LLM provider, only the text of what you
 asked for and Peter's reply.
+
+**Weather is the one feature that talks to a third party other than your LLM
+provider.** A city name (or coordinates) goes to Open-Meteo to look up the
+forecast — no account, no key, and nothing else about you goes with it, but
+it's still a network call to a service that isn't Anthropic/OpenAI/Google.
+Bank/UPI and courier SMS parsed for expenses and deliveries never leave this
+machine at all — the ledger is a local SQLite table, same as everything
+else in that first list.
 
 What is sent to Telegram, if you enable it: your messages to Peter, Peter's
 replies, and mirrored proactive announcements.

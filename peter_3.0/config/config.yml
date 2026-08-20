@@ -335,6 +335,8 @@ integrations:
     enabled: true
     # Daily spoken summary. Set enabled: false to turn it off entirely.
     time: "07:30"
+    # Also available: waiting_on, pull_requests, weather (needs
+    # integrations.weather.location or latitude/longitude set below).
     include:
       - calendar
       - mail
@@ -531,6 +533,40 @@ integrations:
     # hand — a wireless session doesn't survive the phone leaving Wi-Fi, a
     # reboot, or wireless debugging being toggled off and on.
     wireless_address: ""
+    # Folders transcribe_phone_voice_note checks, in order, for the newest
+    # audio file. WhatsApp's own folder plus common recorder-app ones.
+    voice_note_dirs:
+      - "/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Voice Notes"
+      - "/sdcard/Recordings"
+      - "/sdcard/Music/Recordings"
+      - "/sdcard/Recordings/Call"
+
+  # --------------------------------------------------------------- expenses
+  # A personal spend ledger built by parsing bank/UPI SMS. Heuristic, not
+  # authoritative — see peter/expenses.py. Needs phone.enabled above, since
+  # the source is SMS read over ADB. On-demand only (scan_bank_sms /
+  # expense_report) — no background sweep in this first version.
+  expenses:
+    enabled: true
+
+  # -------------------------------------------------------------- deliveries
+  # A shipment tracker built by parsing courier SMS. Same source and the
+  # same honesty caveat as expenses — see peter/deliveries.py.
+  deliveries:
+    enabled: true
+
+  # ----------------------------------------------------------------- weather
+  # Current weather via Open-Meteo — free, no API key, no signup. A city name
+  # is geocoded once and cached for the session; set latitude/longitude
+  # directly to skip geocoding. Add "weather" to briefing.include below to
+  # fold it into the morning briefing.
+  weather:
+    enabled: true
+    location: ""             # e.g. "Chennai" — empty means not configured yet
+    latitude: 0.0
+    longitude: 0.0
+    units: metric             # metric | imperial
+    timeout_seconds: 10
 
   # ------------------------------------------------------------------- docs
   # Full-text search over folders you point Peter at, and answers built from

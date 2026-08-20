@@ -590,6 +590,60 @@ class PhoneConfig(BaseModel):
     # `adb connect` by hand. The IP can change if your router doesn't keep
     # it fixed; a DHCP reservation on the router avoids that.
     wireless_address: str = ""
+    # Where `transcribe_phone_voice_note` looks, in order, for the newest
+    # audio file. WhatsApp's own folder plus the common recorder-app ones —
+    # there is no single standard location the way there is for screenshots.
+    voice_note_dirs: list[str] = Field(
+        default_factory=lambda: [
+            "/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Voice Notes",
+            "/sdcard/Recordings",
+            "/sdcard/Music/Recordings",
+            "/sdcard/Recordings/Call",
+        ]
+    )
+
+
+class ExpenseConfig(BaseModel):
+    """A personal spend ledger built by parsing bank/UPI SMS. See peter/expenses.py.
+
+    Heuristic, not authoritative: SMS formats vary widely across Indian banks
+    and this errs toward under-counting — skipping a message it does not
+    recognise — rather than guessing at one it half-understands. Treat it as
+    a rough running total, not a substitute for the actual bank statement.
+    Needs integrations.phone.enabled, since the source is SMS read over ADB.
+    """
+
+    enabled: bool = True
+
+
+class DeliveryConfig(BaseModel):
+    """A shipment tracker built by parsing courier SMS. See peter/deliveries.py.
+
+    Same honesty caveat as expenses: courier SMS formats vary, and a message
+    this does not recognise is silently skipped rather than guessed at.
+    Needs integrations.phone.enabled, since the source is SMS read over ADB.
+    """
+
+    enabled: bool = True
+
+
+class WeatherConfig(BaseModel):
+    """Current weather via Open-Meteo. See peter/integrations/weather.py.
+
+    Open-Meteo needs no API key and no signup, which is why it is the
+    default rather than a metered provider — see .env.example for why every
+    other integration in this file that talks to a paid API needs a secret
+    and this one deliberately does not.
+    """
+
+    enabled: bool = True
+    # A city name, geocoded once and cached in-process (coordinates do not
+    # change) — or set latitude/longitude directly below to skip geocoding.
+    location: str = ""
+    latitude: float = 0.0
+    longitude: float = 0.0
+    units: Literal["metric", "imperial"] = "metric"
+    timeout_seconds: float = Field(default=10.0, gt=0)
 
 
 class DocsConfig(BaseModel):
@@ -634,6 +688,9 @@ class IntegrationsConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     phone: PhoneConfig = Field(default_factory=PhoneConfig)
     docs: DocsConfig = Field(default_factory=DocsConfig)
+    expenses: ExpenseConfig = Field(default_factory=ExpenseConfig)
+    deliveries: DeliveryConfig = Field(default_factory=DeliveryConfig)
+    weather: WeatherConfig = Field(default_factory=WeatherConfig)
 
 
 # =================================================================== .env
@@ -779,6 +836,10 @@ class Config(BaseModel):
     @property
     def phone_pulls_dir(self) -> Path:
         return self.data_dir / "phone_pulls"
+
+    @property
+    def phone_voice_notes_dir(self) -> Path:
+        return self.data_dir / "phone_voice_notes"
 
     def resolve(self, value: str) -> Path:
         """Resolve a config path value against the project root."""
