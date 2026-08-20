@@ -294,3 +294,54 @@ def test_the_sms_tool_reports_a_disconnected_phone_speakably(container, monkeypa
     result = registry.get_record("read_sms").raw_fn()
 
     assert "Connect the phone by USB" in result
+
+
+# --------------------------------------------------------- adb_path resolution
+# adb_path can be unzipped straight into the repo rather than added to PATH —
+# a real setup this project actually uses. A relative path there must not
+# silently depend on whatever directory Peter happens to be launched from.
+def test_a_bare_command_name_is_left_alone_for_path_lookup():
+    """"adb" (no directory component) means "find it on PATH" — resolving it
+    against the project root would instead look for a literal file named
+    "adb" sitting at the repo root, which is not what an empty path means."""
+    resolved = adb._resolved_adb_path(phone_config(adb_path="adb"))
+    assert resolved == "adb"
+
+
+def test_a_relative_path_is_anchored_to_the_project_root_not_the_cwd():
+    from peter.core.config import PROJECT_ROOT
+
+    resolved = adb._resolved_adb_path(
+        phone_config(adb_path="./mobile dev/platform-tools/adb.exe")
+    )
+
+    assert resolved == str((PROJECT_ROOT / "mobile dev/platform-tools/adb.exe").resolve())
+    assert resolved.startswith(str(PROJECT_ROOT))
+
+
+def test_an_absolute_path_is_passed_through_untouched():
+    absolute = "C:/platform-tools/adb.exe"
+    assert adb._resolved_adb_path(phone_config(adb_path=absolute)) == absolute
+
+
+def test_the_resolved_path_is_what_actually_gets_run(monkeypatch):
+    """The resolution has to reach the real subprocess call, not just exist
+    as a helper nothing uses."""
+    calls = fake_adb(monkeypatch, "")
+
+    adb.messages(phone_config(adb_path="./mobile dev/platform-tools/adb.exe"))
+
+    from peter.core.config import PROJECT_ROOT
+
+    assert calls[0][0] == str(
+        (PROJECT_ROOT / "mobile dev/platform-tools/adb.exe").resolve()
+    )
+
+
+def test_a_path_with_a_space_in_the_directory_name_resolves_correctly():
+    """The actual folder this points at in practice — "mobile dev" — has a
+    space in it; make sure that survives resolution intact."""
+    resolved = adb._resolved_adb_path(
+        phone_config(adb_path="./mobile dev/platform-tools/adb.exe")
+    )
+    assert "mobile dev" in resolved

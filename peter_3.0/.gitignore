@@ -28,6 +28,11 @@ voices/
 # --- browser profile (phase 3) ------------------------------------------------
 browser_profile/
 
+# --- ADB / Android Platform Tools (phone integration) -------------------------
+# A downloaded third-party tool, not project source. Redistribute the download
+# link (developer.android.com/tools/releases/platform-tools), not the binary.
+mobile dev/
+
 # --- python -------------------------------------------------------------------
 .venv/
 venv/

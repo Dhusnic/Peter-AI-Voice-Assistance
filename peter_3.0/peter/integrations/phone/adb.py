@@ -19,12 +19,14 @@ survives contact with actual SMS.
 from __future__ import annotations
 
 import logging
+import pathlib
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from peter.core.config import PROJECT_ROOT
 from peter.core.errors import IntegrationError
 
 log = logging.getLogger(__name__)
@@ -49,8 +51,25 @@ class Sms:
         return f"{self.sender} ({stamp}): {self.body}"
 
 
+def _resolved_adb_path(cfg) -> str:
+    """`adb_path` as configured, with a relative path anchored to the project
+    root rather than left to depend on whatever directory Peter happens to be
+    launched from.
+
+    A bare `"adb"` (no path separator) is left untouched — that means "find it
+    on PATH", and resolving it against the project root would instead make
+    Peter look for a literal `<project root>/adb`, which is not what an empty
+    directory component in the config value means.
+    """
+    raw = (cfg.adb_path or "adb").strip()
+    path = pathlib.Path(raw)
+    if path.is_absolute() or path.parent == pathlib.Path("."):
+        return raw
+    return str((PROJECT_ROOT / path).resolve())
+
+
 def available(cfg) -> bool:
-    return shutil.which(cfg.adb_path) is not None
+    return shutil.which(_resolved_adb_path(cfg)) is not None
 
 
 def _run(device_command: list[str], cfg, timeout: float | None = None) -> str:
@@ -64,7 +83,7 @@ def _run(device_command: list[str], cfg, timeout: float | None = None) -> str:
             ),
         )
 
-    args = [cfg.adb_path]
+    args = [_resolved_adb_path(cfg)]
     if cfg.device_serial:
         args += ["-s", cfg.device_serial]
     args += device_command

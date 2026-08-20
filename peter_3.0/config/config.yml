@@ -431,7 +431,11 @@ integrations:
   dev:
     enabled: true
     # Spoken name -> path on disk. The first is the default when none is named.
-    repos: {}
+    repos: {
+      peter: D:/Peter-AI-Voice-Assistance,
+      Trading_suggestion_Botq: D:/Trading_suggestion_Bot,
+      other project: "D:/Code for tutorials"
+    }
     #   peter: D:/Peter-AI-Voice-Assistance
     # Restrict "my commits" to this author. Empty means the repo's own
     # configured user.email.
@@ -499,8 +503,13 @@ integrations:
   # the handset, which is a deliberate act. Read-only; Peter never sends a
   # message as you.
   phone:
-    enabled: false
-    adb_path: adb            # or a full path to adb.exe
+    enabled: true
+    # adb_path can be just "adb" if it is on the PATH, or a full path to
+    # adb.exe. Peter does not ship adb itself, so you must install it —
+    # here it is unzipped straight into the repo rather than added to PATH,
+    # which is why this points at it directly. That folder is gitignored
+    # (mobile dev/) since it is a downloaded binary, not project source.
+    adb_path: "./mobile dev/platform-tools-latest-windows/platform-tools/adb.exe"
     device_serial: ""        # required only when several devices are attached
     sms_limit: 10
     otp_window_minutes: 10
