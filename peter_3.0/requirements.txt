@@ -66,5 +66,25 @@ plyer>=2.1
 # --- Logging / CLI ---
 rich>=13.7
 
+# --- Screen capture for vision tools ---
+# Pillow (above, under Windows system control) does the grabbing and resizing.
+# Nothing further is needed: the image goes to whichever LLM provider is
+# already configured.
+
+# --- Telegram bridge ---
+# No dependency on purpose. The Bot API is a handful of JSON-over-HTTPS calls
+# and urllib handles them; adding `requests` for three endpoints would be the
+# tail wagging the dog.
+
+# --- Dev tools (git / GitHub) ---
+# Both are subprocesses, not libraries:
+#   git   any recent Git for Windows, on PATH
+#   gh    the GitHub CLI, from cli.github.com, then: gh auth login
+# `gh` keeps its own credentials, so Peter never stores a GitHub token.
+
+# --- Phone bridge (optional, off by default) ---
+# Android Platform Tools (adb) on PATH, USB debugging enabled on the handset.
+# Read-only SMS access; no Python package involved.
+
 # --- Tests ---
 pytest>=8.0

@@ -107,6 +107,54 @@ flowchart LR
         PR1["Meeting-prep nudge: calendar + memory, unprompted"]
         PR2["Inbox digest: what actually needs a reply"]
         PR3["Focus mode: mute, time-box, restore, summarize"]
+        PR4["Waiting-on: mail you sent that nobody answered"]
+        PR5["Price sweeps and CI failures, announced once each"]
+        PR6["Daily work log written into memory"]
+    end
+
+    subgraph SG_PH["Phone"]
+        direction TB
+        PH1["Telegram: ask Peter anything, from anywhere"]
+        PH2["Every proactive nudge mirrored to your phone"]
+        PH3["Unknown chats get no reply at all"]
+        PH4["SMS over ADB: read the one-time code aloud"]
+    end
+
+    subgraph SG_EY["Vision"]
+        direction TB
+        EY1["Look at the screen: 'what is this error?'"]
+        EY2["Look at an image file"]
+        EY3["Look at the current browser page"]
+    end
+
+    subgraph SG_R["Meetings"]
+        direction TB
+        R1["Record system audio, not just your mic"]
+        R2["Transcribed on-device, audio never leaves"]
+        R3["Decisions and action items, written to memory"]
+    end
+
+    subgraph SG_D["Development"]
+        direction TB
+        D1["Git status and your commits"]
+        D2["Reviews requested of you, across every repo"]
+        D3["A build that just broke, announced once"]
+        D4["Standup written from real activity"]
+    end
+
+    subgraph SG_DOC["Documents"]
+        direction TB
+        DOC1["Index folders you point at"]
+        DOC2["Search passages, free"]
+        DOC3["Answers cited back to the file"]
+        DOC4["Workspaces: save and reopen what you had open"]
+    end
+
+    subgraph SG_CO["Cost"]
+        direction TB
+        CO1["Every turn's cost kept, per day and per model"]
+        CO2["Totalled in rupees, stored in dollars"]
+        CO3["Optional daily cap: warn or block"]
     end
 
     P --> SG_V
@@ -119,6 +167,12 @@ flowchart LR
     P --> SG_L
     P --> SG_G
     P --> SG_PR
+    P --> SG_PH
+    P --> SG_EY
+    P --> SG_R
+    P --> SG_D
+    P --> SG_DOC
+    P --> SG_CO
 ```
 
 ### 1.2 What each area means in practice
@@ -133,17 +187,24 @@ flowchart LR
 | **Calendar** | "What's on my calendar tomorrow" | Talks to Google Calendar/Tasks via a narrow OAuth client (sensitive, not restricted, scope — see §2.7). |
 | **Browser** | "Check the price of this laptop on Flipkart" | No official API exists for that site (see README for the full API survey), so Peter drives a real, logged-in Playwright browser instead. It reads the page's own structured product data first (JSON-LD/OpenGraph — what Google Shopping reads), falling back to a screenshot only if that's absent. |
 | **Multi-LLM** | "Switch to Gemini" | The whole conversation's tool-calling loop is vendor-neutral, so switching providers mid-session works without rewriting history — see §2.2.2. When Gemini is set to `auto` (this deployment's default), each turn's own text picks a cheap or a strong model with no extra API call — see §2.2.4. |
-| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 72 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
+| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 110 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
 | **Proactive** | (nothing — that's the point) | "Team meeting in 10 minutes, with Priya and Arjun" fires on its own from a calendar poll. "3 of your 23 unread look like they need a reply" fires from a mail poll. Both are read-only nudges, never actions taken on your behalf — see §2.10. |
+| **Phone** | (from Telegram) "what's on my calendar tomorrow" | The same brain, tools, memory and permission gate, reached over the Telegram Bot API — and every proactive nudge mirrored the other way, so a reminder finds you when you are not at the machine. An unknown chat gets *no reply at all*: replying would confirm the bot exists. Anything needing confirmation is declined remotely rather than left hanging on a console prompt nobody is at — see §2.11. |
+| **Vision** | "What's this error?" (pointing at the screen) | The screen is captured, downscaled, and actually read by a vision model. `take_screenshot` saved a PNG and stopped; this closes the loop. One isolated call, never left in conversation history — a megapixel image re-sent every turn would be the most expensive mistake available — see §2.14. |
+| **Meetings** | "Start recording the sprint planning" | Captures what the *speakers* are playing (WASAPI loopback — i.e. the other people), transcribed on-device with faster-whisper in a background thread, then summarised into decisions and action items and written to memory. The audio never leaves the machine; only the final text is a model call. That stored episode is what lets a meeting-prep nudge say "your last conversation with Priya was about the thresholds" weeks later — see §2.12. |
+| **Development** | "What's waiting on me?" / "Write my standup" | `git` and `gh` as subprocesses, so Peter never holds a GitHub token — `gh auth login` already keeps it in the OS keychain. Read-only by design: no commit, push or checkout tool. The standup is assembled from commits, calendar, focus sessions and to-dos, and the model is told to phrase that material and invent nothing — see §2.13. |
+| **Documents** | "What did we agree the retry budget was?" | FTS5 over folders you point at, incremental on (size, mtime). `search_docs` is a SQLite query and free; `ask_docs` spends one call to turn the matching passages into an answer cited back to the file, and says so plainly when they do not contain one — see §2.14. |
+| **Cost** | "How much have I spent this week?" | Every turn is appended to a ledger, derived by subtracting cumulative counters. Stored in USD (what vendors bill in), displayed in rupees — storing the converted figure would freeze each day's exchange rate into history. An optional daily cap warns or blocks, checked *before* a turn, since that is the only moment it can stop anything — see §2.17. |
 
 ### 1.3 What is deliberately **not** built yet
 
 Being explicit about the boundary matters as much as the feature list:
 
 - **No autonomous purchase completion.** Peter can fill a cart and reach the payment screen; RBI's mandatory two-factor authentication rules (from 1 April 2026) mean the OTP/UPI PIN step is legally yours, not automatable, so the code has no path that attempts it.
-- **No live transport/seat-availability watchers yet** (Phase 4 — polling jobs for price/seat drops). The browser layer that would power them already exists.
-- **No SMS / phone bridge** (Phase 6 — would need an Android companion app or ADB bridge; Windows has no API into your phone's messages).
-- **No subagent fan-out** (Phase 7 — e.g. "check this product across 5 sites at once" in parallel). The current design is deliberately a single agent loop with ~72 tools, which is simpler to debug and sufficient for now.
+- **No cart-building hand-off** (was Phase 5, now deliberately dropped). Peter can walk a checkout to the payment screen, but since it can never legally complete one, the remaining value is a cart built by scraping flows that break constantly and put the account at risk. Not worth it.
+- **No send-SMS tool.** The phone bridge (§2.15) reads messages; it does not send. Sending as you needs default-SMS-app privileges or `service call isms` incantations that differ per Android version, and is a bad idea for something driven by speech recognition.
+- **No git write tools.** §2.13 reads repositories — status, commits, PRs, CI. There is no commit, push, merge or checkout tool: an assistant that rewrites your working tree on a misheard sentence is a liability, and the upside is saving you from typing `git commit`.
+- **No automatic recording.** §2.12 records when asked. `auto_record_meetings` exists, defaults to off, and stays off unless deliberately enabled — recording a conversation is not a default anyone should inherit silently.
 
 ---
 
@@ -470,21 +531,41 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **72 tools currently registered**, split by permission tier:
+- **110 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
 | `system.py` | 6 | 9 | apps, files, clipboard, volume, screenshot, stats, lock, PowerShell |
-| `mail_tools.py` | 5 | 5 | read/search/send/star/archive/delete + inbox_digest triage |
+| `mail_tools.py` | 6 | 5 | read/search/send/star/archive/delete + inbox_digest + waiting_on |
 | `time_tools.py` | 3 | 6 | alarms, timers, reminders, to-dos |
 | `calendar_tools.py` | 4 | 4 | events + Google Tasks |
-| `browser_tools.py` | 5 | 4 | read/click/type/login on sites with no API |
+| `browser_tools.py` | 6 | 4 | read/click/type/login, plus multi-site comparison |
 | `desktop_tools.py` | 2 | 6 | apps, bookmarks, YouTube, media keys, local folders |
 | `memory_tools.py` | 2 | 4 | facts + preferences |
 | `focus_tools.py` | 1 | 2 | timed mute-and-restore focus sessions |
 | `briefing_tools.py` | 2 | 0 | morning briefing status |
-| `llm_tools.py` | 1 | 1 | switch / inspect provider |
-| **Total** | **31** | **41** | |
+| `llm_tools.py` | 2 | 1 | switch / inspect provider, spend report |
+| `vision_tools.py` | 3 | 0 | look at the screen, an image, or the browser page |
+| `watch_tools.py` | 2 | 2 | standing price and stock watches |
+| `workspace_tools.py` | 1 | 3 | save / restore a set of open applications |
+| `docs_tools.py` | 3 | 2 | index folders, search them, answer from them |
+| `recorder_tools.py` | 4 | 3 | record, transcribe, summarise, read back |
+| `dev_tools.py` | 7 | 0 | git, PRs, CI, work log, standup |
+| `telegram_tools.py` | 1 | 1 | send to your phone, bridge status |
+| `phone_tools.py` | 3 | 0 | read SMS, latest one-time code, phone status |
+| **Total** | **58** | **52** | |
+
+  Six of the write-tier tools are pulled back to *confirm* by standing rules in
+  `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
+  `run_powershell`, `lock_workstation`, `send_email`. Those destroy data, run
+  arbitrary commands, or send something that cannot be unsent.
+
+  **Tool groups whose credentials are missing are not registered at all**
+  (`_REQUIRES` in the registry). Every schema is re-sent on every API call, so
+  an unusable group costs ~1,000 tokens per request to describe actions that
+  can only fail. `prompts.py` still states plainly which integrations are
+  unconfigured, so Peter can say "you have not set that up" without carrying
+  the schemas to do it.
 
   Notice there is no `spend` tier in this table — see §2.6, that boundary is
   enforced structurally in the browser layer, not by a tool flag that a
@@ -944,6 +1025,242 @@ flowchart TD
 
 ---
 
+### 2.11 Reaching you off the desk — `peter/telegram_bridge.py`, `peter/integrations/telegram/`
+
+Everything in §2.10 announces itself with a spoken line and a desktop toast.
+Both only exist if you are sitting in front of the machine, which makes every
+proactive feature worth roughly nothing the moment you walk away. The Telegram
+bridge is the multiplier that fixes that, in both directions.
+
+```mermaid
+flowchart LR
+    subgraph IN["inbound"]
+        direction TB
+        T1["long poll<br/>getUpdates"] --> T2{"chat in<br/>allowed_chat_ids?"}
+        T2 -->|"no"| T3["silence<br/>(logged once)"]
+        T2 -->|"yes"| T4["Peter.handle_remote()"]
+    end
+    subgraph OUT["outbound"]
+        direction TB
+        N1["notify()"] --> N2["desktop toast"]
+        N1 --> N3["telegram.push()"]
+    end
+    T4 --> B["same Brain,<br/>tools, memory, gate"]
+    B --> R["reply to that chat"]
+```
+
+Four decisions, all of them security rather than design taste:
+
+- **An unknown chat gets no reply at all.** A bot token is effectively a public
+  endpoint — anyone who finds the bot's name can message it. Replying "you are
+  not authorised" confirms the bot is alive and worth attacking. Silence does
+  not. An empty `allowed_chat_ids` therefore means *nobody*, not *everybody*.
+- **The backlog is dropped at startup.** Telegram holds undelivered updates for
+  24 hours. Without this, everything sent while Peter was off would execute in
+  a burst on restart — including instructions already carried out by hand.
+- **Confirmations are declined, not deferred.** A `confirm`-tier tool reads the
+  local console or the microphone, neither of which a phone can reach. A remote
+  turn installs a `RemoteConfirmer` that declines immediately with its own
+  explanation, rather than blocking for the full confirmation timeout and then
+  declining anyway. Destructive actions stay at the desk.
+- **Turns are serialised.** The bridge runs in its own thread while the mic or
+  console may also be producing turns, and the provider owns one conversation
+  history. `Peter._turn_lock` is what stops two turns interleaving into it —
+  and is also what makes swapping the confirmer per-turn safe.
+
+`notify()` gained a second channel rather than the features gaining a Telegram
+dependency: reminders, meeting prep, the inbox digest, focus completion, price
+alerts and CI failures all reach the phone without any of them knowing Telegram
+exists. Both channels are independently best-effort; a failed push never fails
+the job behind it.
+
+The Bot API is reached with `urllib` — no new dependency. `getUpdates` is a
+*long* poll, so a 25-second timeout is one held HTTP request that returns the
+moment a message arrives, which is both cheaper and more responsive than
+polling every second.
+
+---
+
+### 2.12 Local capture and transcription — `peter/meeting_notes.py`, `peter/integrations/desktop/recorder.py`
+
+`faster-whisper` was already installed for the wake-word pipeline, which makes
+meeting transcription essentially free: it runs on the CPU, the audio never
+leaves the machine, and only the final summary is a model call — over text, not
+audio.
+
+**Capture order.** WASAPI loopback first (what the speakers are playing — i.e.
+everyone *else* on the call), falling back to the microphone. Windows exposes
+any output device as a capture device and PortAudio surfaces that through
+`sd.WasapiSettings(loopback=True)`; older sounddevice builds have no such
+argument, hence a fallback rather than a version pin. The caller is told which
+one it got, because "captures your side only" is a meaningful difference to a
+person deciding whether the recording was worth making.
+
+**Disk writes are on their own thread.** Blocking inside a PortAudio callback
+produces dropouts, and `wave.writeframes` on a slow disk absolutely can block.
+The callback pushes to a bounded queue and drops rather than blocks when full —
+20 ms of silence in one place beats corrupting everything after it.
+
+**Transcription is deliberately asynchronous.** An hour of audio takes minutes
+even on `small.en`. `stop_recording` returns immediately and a daemon thread
+transcribes, summarises, writes `.txt` and `.md` next to the audio, records an
+episode, then speaks and pushes the result. A tool call that blocks a
+conversation for four minutes is not a tool, it is a hang.
+
+That episode is what closes the loop with §2.10: weeks later the meeting-prep
+nudge can say *"your last conversation with Priya was about the alerting
+thresholds"*, because a real transcript was folded into memory rather than a
+recollection.
+
+---
+
+### 2.13 Development state — `peter/integrations/dev/`, `peter/worklog.py`, `peter/ci_watch.py`
+
+Shelling out to `git` and `gh` rather than talking to the GitHub API directly.
+That trade is deliberate: `gh auth login` already keeps your credentials in the
+OS keychain, so **Peter never sees or stores a GitHub token**, private repos and
+enterprise hosts work without extra configuration, and the whole integration is
+one subprocess call plus a `--json` flag.
+
+Everything is parsed from machine-readable formats — `git status --porcelain=v2`
+and `gh --json` — never from human-readable output, which changes between
+versions and localises. Commit lines use a unit separator (`\x1f`) between
+fields, because commit subjects contain colons, pipes and dashes constantly.
+
+**The work log is a join, not a memory.** Commits sit in git, meetings in the
+calendar, focus sessions and meeting notes in episodes, finished work in the
+to-do list. Nothing joined them up. The daily job assembles all four and writes
+one episode, so "what was I doing last Tuesday" survives long after that
+conversation left the context window. `standup_notes` is the only part that
+calls a model, and only to phrase material it is handed — with an explicit
+instruction never to invent a task, meeting or blocker.
+
+Every source degrades independently: no git, no calendar, no `gh`, nothing
+configured at all — you still get a log of whatever the rest could see.
+
+**The CI watcher is mostly its dedup.** A failing run stays in `gh run list` for
+days, so without remembering what has been announced it would report the same
+broken build every ten minutes until it was fixed — which is exactly how a
+useful alert becomes a muted one. It also *primes* on its first sweep after
+startup: it records what is already failing without announcing it, so starting
+Peter does not produce a burst of alerts about last week.
+
+---
+
+### 2.14 Watching, seeing, searching — price watches, vision, documents
+
+Three features that share no code but do share a shape: each is a small store
+plus one rule about when to speak.
+
+**Price watches** (`peter/price_watch.py`) — Phase 4, and the cheapest large
+feature here because the hard parts already existed: §2.6 proved a product page
+can be read from its own published structured data, the browser already spaces
+requests per domain, and the scheduler already survives restarts. What this adds
+is the watch list and `evaluate()` — a pure function of the stored watch and the
+fresh reading, which is why the alert rule can be tested exhaustively without a
+browser anywhere near it. It fires on a target reached, a fall of at least
+`drop_percent`, or a return to stock, and **never twice for the same price** —
+only a *further* fall is news. Sweeps stay slow on purpose; the fix for a slow
+sweep is fewer watches, not a shorter gap.
+
+**Vision** (`peter/llm/vision.py`) — deliberately *not* part of `LLMProvider`.
+That interface models one long conversation with history, caching and tools; an
+image question is the opposite — one call, no tools, no history, and an input
+you never want re-sent. Bolting it on would leave a megapixel screenshot in the
+conversation context for the rest of the session. Images are downscaled first: a
+3840px grab costs several times a 1600px one and reads no better, since the
+model is reading, not pixel-peeping. An image already small enough is passed
+through untouched, because re-encoding a screenshot as JPEG only adds artefacts
+to the text being read.
+
+**Documents** (`peter/docs_index.py`) — the same FTS5 idea as §2.5, aimed at
+files. In its own database, because it is the one store that can reach hundreds
+of megabytes and the one you might want to delete and rebuild. Indexing is
+incremental on (size, mtime), so re-indexing a large tree after editing two
+files costs two files' work. Chunking splits on paragraph boundaries rather than
+a fixed window — a passage that stops mid-sentence retrieves badly and reads
+worse when quoted back. Search tries every term, then any term: requiring all of
+them returns nothing far too often for a spoken question. `search_docs` is a
+SQLite query and free; `ask_docs` spends a model call to turn passages into a
+cited answer. Keeping them separate is what keeps the cheap one cheap.
+
+---
+
+### 2.15 The phone — `peter/integrations/phone/adb.py`
+
+Windows has no API into your handset's messages; Phone Link is closed. The two
+routes that work are a companion app you write, or ADB, which most developer
+machines already have. ADB, and read-only.
+
+Two parsing details carry all the risk. `adb shell` hands its argument to the
+*phone's* shell, which re-splits it — so the device-side command is built as one
+string, since passing `--where` and `date>123` as separate argv entries arrives
+as two words and fails with an error mentioning neither. And `content query`
+output has no escaping, so fields are split on the *next field name* via
+lookahead rather than on `", "`, which appears freely inside real message
+bodies.
+
+`latest_code` prefers a message that says it is a code over a bare number,
+because the first number in an SMS is very often an order id or an amount. The
+code is then read out digit by digit — a speech engine given "123456" says "one
+hundred and twenty-three thousand…".
+
+This is the honest end of the payment story from §2.6: Peter can walk a checkout
+to the payment screen but can never complete it, and reading the OTP aloud so
+you can type it is exactly as far as automation should reach into that.
+
+---
+
+### 2.16 Subagents — `peter/agent/subagents.py`
+
+Phase 7, and the case that genuinely earns one. Comparing a product across five
+sites means five page reads at ~1,500 tokens each. Fed into the main
+conversation that is 7,500 tokens of raw page text sitting in history for the
+rest of the session, **re-sent on every subsequent turn**, to produce an answer
+two sentences long.
+
+So each page gets its own isolated, tool-free model call answering the question
+about that page alone, and only those short findings are synthesised. The main
+conversation sees a comparison, not five web pages.
+
+**The fan-out is in the model calls, not the fetches.** There is one browser
+with one page, and per-domain rate limiting is deliberate, so pages are read
+serially. What runs in parallel is the reading-and-extracting of what has
+already been fetched — which is where the wall-clock time goes once a model is
+involved. Claiming otherwise would be a nice diagram and a lie.
+
+`factory.build_provider` gained a `model` override for this: the subagent's job
+is extraction, not reasoning, so a cheaper model is usually the right tool. The
+main conversation never uses that override.
+
+---
+
+### 2.17 Cost, kept — `peter/spend.py`
+
+`Brain.usage_summary()` always reported the session total, which vanishes when
+the process exits. But every real question about cost spans longer than one
+session: is Gemini cheaper *in practice*, did `auto` routing help, what does a
+working day cost, is that rise a trend or one expensive afternoon.
+
+Each turn is now appended to a ledger. The per-turn figure is derived by
+*subtracting* cumulative counters before and after the turn, because providers
+accumulate usage across a session rather than reporting per call.
+
+**Stored in USD, displayed in rupees.** USD is the unit every vendor bills in;
+storing the converted figure would freeze each day's exchange rate into history
+and make last month's numbers uncomparable with this month's. Conversion happens
+at the point a human reads it.
+
+The daily cap is checked *before* a turn, since that is the only moment it can
+stop anything — a turn's cost is not knowable until it has been paid for. It
+offers `warn` and `block` and deliberately **not** "drop to the cheap model":
+Gemini's `auto` routing already picks a model per turn and overwrites it on
+every call, so a budget-imposed downgrade would silently not apply on the very
+setup most likely to want it. A switch that works on two vendors out of three is
+worse than not offering one.
+
+---
+
 ## Appendix — file map
 
 ```
@@ -953,10 +1270,12 @@ peter_3.0/
 ├── peter/
 │   ├── main.py                # §2.9 supervisor loop
 │   ├── agent/
-│   │   ├── brain.py            # §2.2 turn orchestration
+│   │   ├── brain.py            # §2.2 turn orchestration, §2.17 spend recording
+│   │   ├── subagents.py        # §2.16 per-page fan-out for comparisons
 │   │   ├── prompts.py          # §2.2.3 frozen system prompt
 │   │   └── registry.py         # §2.3 @peter_tool → schema + tier
 │   ├── llm/
+│   │   ├── vision.py            # §2.14 one-shot image calls, per vendor
 │   │   ├── loop.py              # §2.2.1 the one shared tool-call loop
 │   │   ├── base.py              # vendor-neutral types
 │   │   ├── factory.py           # picks + builds the active provider
@@ -967,12 +1286,21 @@ peter_3.0/
 │   ├── policy/
 │   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
 │   │   └── audit.py              # append-only JSONL trail
-│   ├── tools/                   # §2.3 the 72 registered tools
+│   ├── tools/                   # §2.3 the 110 registered tools
 │   ├── memory/store.py          # §2.5 SQLite + FTS5
 │   ├── scheduler/jobs.py        # §2.8 APScheduler + SQLite jobstore
 │   ├── meeting_prep.py          # §2.10 calendar + memory nudge
 │   ├── inbox_digest.py          # §2.10 read-only "needs a reply" scan
 │   ├── focus.py                 # §2.10 mute / time-box / restore
+│   ├── waiting_on.py            # §2.10 sent mail nobody answered
+│   ├── telegram_bridge.py       # §2.11 inbound thread, remote confirmer
+│   ├── meeting_notes.py         # §2.12 record → transcribe → summarise
+│   ├── worklog.py               # §2.13 the day's join, and the standup
+│   ├── ci_watch.py              # §2.13 build-failure watcher (dedup + priming)
+│   ├── price_watch.py           # §2.14 watch list + the alert rule
+│   ├── docs_index.py            # §2.14 FTS5 over folders, cited answers
+│   ├── workspace.py             # §2.14 save / restore open applications
+│   ├── spend.py                 # §2.17 the cost ledger and the daily cap
 │   ├── ui/
 │   │   ├── progress.py           # §2.9b CLI status line, branded spinners
 │   │   ├── confirm.py            # voice-mode spoken yes/no confirmer
@@ -981,13 +1309,17 @@ peter_3.0/
 │   │   ├── mail/                 # §2.7 IMAP/SMTP
 │   │   ├── google/               # §2.7 Calendar/Tasks OAuth
 │   │   ├── browser/              # §2.6 Playwright + purchase interlock
+│   │   ├── telegram/             # §2.11 Bot API over urllib, push()
+│   │   ├── dev/                  # §2.13 git + gh, both as subprocesses
+│   │   ├── phone/                # §2.15 ADB: devices, SMS, one-time codes
 │   │   └── desktop/              # §2.6b apps, bookmarks, YouTube, media, folders
 │   │       ├── browsers.py        # open_url + bookmark reading (Firefox/Chromium)
 │   │       ├── matching.py        # fuzzy rank() for "open the staging dashboard"
 │   │       ├── media.py           # real media-key events
 │   │       ├── places.py          # standard Windows folders + configured ones
 │   │       ├── youtube.py         # top-result search, no API key
-│   │       └── volume.py          # §2.10 pycaw get/set, shared by focus mode
+│   │       ├── volume.py          # §2.10 pycaw get/set, shared by focus mode
+│   │       └── recorder.py        # §2.12 WASAPI loopback → WAV, off-thread writes
 │   ├── voice/                   # §2.1 wake / stt / tts / audio
 │   └── core/
 │       ├── config.py             # config.yml + .env loader/validator
@@ -995,6 +1327,7 @@ peter_3.0/
 │       ├── errors.py             # PeterError hierarchy
 │       ├── logging.py            # literal-value secret redaction, shared Console
 │       ├── retry.py              # §2.2.4 call_with_retry: backoff + jitter
-│       └── notify.py             # desktop toast, shared by reminders/proactive features
+│       ├── db.py                 # shared SQLite helper: WAL, lock, busy timeout
+│       └── notify.py             # §2.11 toast + Telegram, both best-effort
 └── tests/                     # one test file per subsystem above
 ```

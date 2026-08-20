@@ -101,6 +101,66 @@ class CacheConfig(BaseModel):
     min_tokens: int = Field(default=4096, ge=1)
 
 
+class VisionConfig(BaseModel):
+    """Looking at an image (the screen, a browser page, a file).
+
+    A separate one-shot call rather than part of the conversation: an image is
+    expensive and there is no reason to keep re-sending it on every later turn
+    of the same conversation. See peter/llm/vision.py.
+    """
+
+    enabled: bool = True
+    # Empty means "whatever agent.provider is". Every current model from all
+    # three vendors reads images, so there is rarely a reason to pin one.
+    provider: str = ""
+    model: str = ""
+    # Screens are wide; a 3840px-wide grab costs several times what a 1600px
+    # one does and reads no better. Downscaled before sending.
+    max_width: int = Field(default=1600, ge=320, le=4096)
+    jpeg_quality: int = Field(default=80, ge=30, le=100)
+    max_tokens: int = Field(default=1200, gt=0)
+
+
+class SubagentConfig(BaseModel):
+    """Parallel fan-out for reading several pages at once.
+
+    Earns its place only where the alternative is flooding the main
+    conversation with several thousand tokens of page text. See
+    peter/agent/subagents.py.
+    """
+
+    enabled: bool = True
+    # Empty means the configured provider's own model. A cheaper model is
+    # usually right here: the subagent's job is extraction, not reasoning.
+    provider: str = ""
+    model: str = ""
+    max_sites: int = Field(default=5, ge=2, le=10)
+    max_chars_per_site: int = Field(default=4000, gt=200)
+    # Page reads are serial (one browser, one page); only the model calls fan
+    # out. This caps how many of those run at once.
+    max_workers: int = Field(default=4, ge=1, le=8)
+
+
+class BudgetConfig(BaseModel):
+    """A daily spend ceiling, in rupees. See peter/spend.py.
+
+    Zero disables it entirely, which is the default — a budget that trips
+    unexpectedly mid-sentence is worse than no budget until you have looked at
+    a week of real numbers and picked one deliberately.
+    """
+
+    daily_inr: float = Field(default=0.0, ge=0)
+    # warn   say something once, then carry on
+    # block  refuse further turns until midnight
+    #
+    # There is deliberately no "drop to the cheap model" option. Gemini's
+    # `auto` routing already picks the model per turn and overwrites it on
+    # every call, so a budget-imposed downgrade would silently not apply on
+    # the very setup most likely to want it. A switch that works on two
+    # vendors out of three is worse than not offering it.
+    action: Literal["warn", "block"] = "warn"
+
+
 class AgentConfig(BaseModel):
     # Which LLM vendor answers. Switchable at runtime with the
     # switch_llm_provider tool, or per-run with PETER__AGENT__PROVIDER.
@@ -138,6 +198,9 @@ class AgentConfig(BaseModel):
     # There is no live FX feed, so this is a manually maintained rate — update
     # it here occasionally rather than trusting it to stay exact forever.
     usd_to_inr_rate: float = Field(default=88.0, gt=0)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
+    subagent: SubagentConfig = Field(default_factory=SubagentConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
 
 
 class WakeConfig(BaseModel):
@@ -206,6 +269,9 @@ class MailConfig(BaseModel):
     inbox_folder: str = "INBOX"
     archive_folder: str = "[Gmail]/All Mail"
     trash_folder: str = "[Gmail]/Trash"
+    # Where your own sent mail lands. Read by the waiting-on tracker to work
+    # out which of your messages never got a reply.
+    sent_folder: str = "[Gmail]/Sent Mail"
     fetch_limit: int = Field(default=25, gt=0, le=200)
     body_chars: int = Field(default=4000, gt=100)
     timeout_seconds: float = Field(default=30.0, gt=0)
@@ -323,6 +389,201 @@ class InboxDigestConfig(BaseModel):
     max_emails: int = Field(default=15, gt=0, le=100)
 
 
+class TelegramConfig(BaseModel):
+    """Reaching Peter — and being reached by Peter — away from the desk.
+
+    The single biggest multiplier on every proactive feature here: a tray
+    toast only exists if you are sitting in front of the machine, whereas a
+    Telegram message finds you. See peter/telegram_bridge.py.
+    """
+
+    enabled: bool = True
+    # Chat ids allowed to talk to Peter. **An empty list means nobody**, which
+    # is the only safe default: a bot token is a public endpoint, and anyone
+    # who guesses the bot's name can message it. Run
+    # `python -m peter.main --telegram-setup` to find your own id.
+    allowed_chat_ids: list[int] = Field(default_factory=list)
+    # Seconds the getUpdates long poll is held open. Telegram supports up to
+    # 50; this is one held HTTP request, not repeated polling, so a long value
+    # is *cheaper* than a short one as well as more responsive.
+    long_poll_seconds: int = Field(default=25, ge=1, le=50)
+    # Forward proactive announcements (reminders, meeting prep, the inbox
+    # digest, finished focus sessions, price alerts) to the same chats.
+    forward_notifications: bool = True
+    # Telegram rejects messages over 4096 characters.
+    max_message_chars: int = Field(default=3800, ge=200, le=4096)
+    timeout_seconds: float = Field(default=40.0, gt=0)
+
+
+class PriceWatchConfig(BaseModel):
+    """Standing price/stock watches on product pages. See peter/price_watch.py."""
+
+    enabled: bool = True
+    # How often the watch list is swept. Each page read is additionally spaced
+    # by integrations.browser.min_interval_seconds per domain, so a sweep of
+    # several watches on one site takes minutes by design — that spacing is
+    # what keeps the account un-flagged.
+    poll_interval_minutes: int = Field(default=90, ge=15, le=1440)
+    max_watches: int = Field(default=20, ge=1, le=100)
+    # Announce a fall of at least this percent even when no target was set.
+    drop_percent: float = Field(default=5.0, gt=0, le=100)
+    # Announce when something out of stock comes back.
+    alert_on_restock: bool = True
+
+
+class RecorderConfig(BaseModel):
+    """Local meeting capture and transcription. See peter/meeting_notes.py.
+
+    Everything here happens on this machine: the audio never leaves it, and
+    faster-whisper is already installed for speech-to-text. Only the final
+    summary is a model call, and only over the transcript.
+    """
+
+    enabled: bool = True
+    # Prefer WASAPI loopback (what the speakers are playing — i.e. the other
+    # people in the call). Falls back to the microphone when the installed
+    # sounddevice build cannot do loopback, which captures your side only.
+    capture_system_audio: bool = True
+    sample_rate: int = Field(default=16000, ge=8000, le=48000)
+    max_minutes: int = Field(default=180, gt=0)
+    # Whisper model for transcription, independent of the wake-word pipeline's
+    # — a recording is transcribed in the background, so a slower, more
+    # accurate model is affordable here in a way it is not for a live turn.
+    stt_model: str = "small.en"
+    # Start recording automatically when a meeting-prep nudge fires. Off by
+    # default and deliberately so: recording a conversation without deciding
+    # to is not a default anyone should inherit silently.
+    auto_record_meetings: bool = False
+
+
+class CiWatchConfig(BaseModel):
+    enabled: bool = True
+    poll_interval_minutes: int = Field(default=10, ge=2, le=180)
+    # Empty means every branch the CLI reports on.
+    branches: list[str] = Field(default_factory=list)
+    runs_per_repo: int = Field(default=10, ge=1, le=50)
+
+
+class DevConfig(BaseModel):
+    """Git, pull requests and CI — the state of the work itself.
+
+    `repos` is the whole switch: with none configured nothing here can do
+    anything useful, so the tools are not registered at all and cost nothing.
+    """
+
+    enabled: bool = True
+    # Spoken name -> path on disk. The first is the default when no repo is named.
+    repos: dict[str, str] = Field(default_factory=dict)
+    # Restrict `recent_commits` to your own commits. Empty means match the
+    # repo's configured user.email.
+    git_author: str = ""
+    git_timeout_seconds: float = Field(default=20.0, gt=0)
+    # The GitHub CLI, used for pull requests and CI runs. It carries its own
+    # auth (`gh auth login`), so Peter never handles a GitHub token.
+    gh_path: str = "gh"
+    gh_timeout_seconds: float = Field(default=30.0, gt=0)
+    ci_watch: CiWatchConfig = Field(default_factory=CiWatchConfig)
+
+
+class WorklogConfig(BaseModel):
+    """End-of-day record of what actually happened. See peter/worklog.py."""
+
+    enabled: bool = True
+    time: str = "18:30"
+    days_back: int = Field(default=1, ge=1, le=14)
+
+    @field_validator("time")
+    @classmethod
+    def _hhmm(cls, v: str) -> str:
+        try:
+            hour, minute = v.split(":")
+            if not (0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
+                raise ValueError
+        except (ValueError, AttributeError):
+            raise ValueError(f"worklog.time must be HH:MM, got {v!r}") from None
+        return v
+
+    @property
+    def hour(self) -> int:
+        return int(self.time.split(":")[0])
+
+    @property
+    def minute(self) -> int:
+        return int(self.time.split(":")[1])
+
+
+class WaitingOnConfig(BaseModel):
+    """Mail you sent that nobody answered. See peter/waiting_on.py."""
+
+    enabled: bool = True
+    # A message is only "waiting" once it has had a fair chance of a reply.
+    quiet_days: int = Field(default=3, ge=1, le=60)
+    # How far back in Sent to look at all.
+    lookback_days: int = Field(default=21, ge=1, le=365)
+    max_messages: int = Field(default=40, ge=1, le=200)
+
+
+class WorkspaceConfig(BaseModel):
+    """Saving and restoring a set of open applications. See peter/workspace.py."""
+
+    enabled: bool = True
+    # Executables never captured or relaunched, matched on filename. These are
+    # either always running anyway or actively harmful to relaunch.
+    ignore_executables: list[str] = Field(
+        default_factory=lambda: [
+            "explorer.exe", "searchhost.exe", "shellexperiencehost.exe",
+            "textinputhost.exe", "applicationframehost.exe", "systemsettings.exe",
+            "startmenuexperiencehost.exe", "widgets.exe", "lockapp.exe",
+            "python.exe", "pythonw.exe", "cmd.exe", "conhost.exe",
+        ]
+    )
+    max_apps: int = Field(default=25, ge=1, le=100)
+
+
+class PhoneConfig(BaseModel):
+    """Reading the phone over ADB — SMS, mainly, for one-time codes.
+
+    Off by default: it needs USB debugging enabled and the machine authorised
+    on the handset, which is a deliberate act, not a default state. Read-only
+    on purpose — Peter never sends a message as you.
+    """
+
+    enabled: bool = False
+    # Empty means "adb", found on PATH.
+    adb_path: str = "adb"
+    # Empty means the only attached device; required when more than one is.
+    device_serial: str = ""
+    sms_limit: int = Field(default=10, ge=1, le=100)
+    # How recent a message must be to count as "the code that just arrived".
+    otp_window_minutes: int = Field(default=10, ge=1, le=120)
+    timeout_seconds: float = Field(default=20.0, gt=0)
+
+
+class DocsConfig(BaseModel):
+    """Full-text search over folders you point Peter at. See peter/docs_index.py."""
+
+    enabled: bool = True
+    # Folders indexed on startup, so search works without asking first.
+    folders: list[str] = Field(default_factory=list)
+    extensions: list[str] = Field(
+        default_factory=lambda: [
+            ".md", ".txt", ".rst", ".py", ".js", ".ts", ".java", ".go",
+            ".sql", ".yml", ".yaml", ".json", ".toml", ".ini", ".cfg",
+        ]
+    )
+    # Files above this are almost always generated (lockfiles, bundles,
+    # minified output) and indexing them buries the real content.
+    max_file_kb: int = Field(default=512, gt=0)
+    chunk_chars: int = Field(default=1200, ge=200, le=8000)
+    max_files: int = Field(default=5000, gt=0)
+    skip_directories: list[str] = Field(
+        default_factory=lambda: [
+            ".git", ".venv", "venv", "node_modules", "__pycache__", "dist",
+            "build", ".mypy_cache", ".pytest_cache", ".idea", ".vscode",
+        ]
+    )
+
+
 class IntegrationsConfig(BaseModel):
     mail: MailConfig = Field(default_factory=MailConfig)
     google: GoogleConfig = Field(default_factory=GoogleConfig)
@@ -331,6 +592,15 @@ class IntegrationsConfig(BaseModel):
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
     meeting_prep: MeetingPrepConfig = Field(default_factory=MeetingPrepConfig)
     inbox_digest: InboxDigestConfig = Field(default_factory=InboxDigestConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    price_watch: PriceWatchConfig = Field(default_factory=PriceWatchConfig)
+    recorder: RecorderConfig = Field(default_factory=RecorderConfig)
+    dev: DevConfig = Field(default_factory=DevConfig)
+    worklog: WorklogConfig = Field(default_factory=WorklogConfig)
+    waiting_on: WaitingOnConfig = Field(default_factory=WaitingOnConfig)
+    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
+    phone: PhoneConfig = Field(default_factory=PhoneConfig)
+    docs: DocsConfig = Field(default_factory=DocsConfig)
 
 
 # =================================================================== .env
@@ -349,6 +619,7 @@ class Secrets(BaseModel):
     mail_app_password: SecretStr = SecretStr("")
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
+    telegram_bot_token: SecretStr = SecretStr("")
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -364,6 +635,7 @@ class Secrets(BaseModel):
             google_client_secret=SecretStr(
                 os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
             ),
+            telegram_bot_token=SecretStr(os.getenv("TELEGRAM_BOT_TOKEN", "")),
         )
 
     # Convenience accessors, so callers never sprinkle .get_secret_value() around.
@@ -398,6 +670,14 @@ class Secrets(BaseModel):
     @property
     def has_google(self) -> bool:
         return bool(self.google_client_id and self.google_secret)
+
+    @property
+    def telegram_token(self) -> str:
+        return self.telegram_bot_token.get_secret_value()
+
+    @property
+    def has_telegram(self) -> bool:
+        return bool(self.telegram_token)
 
 
 # ================================================================== root
@@ -448,6 +728,20 @@ class Config(BaseModel):
     @property
     def screenshot_dir(self) -> Path:
         return self.data_dir / "screenshots"
+
+    @property
+    def docs_db_path(self) -> Path:
+        """The document index lives in its own file.
+
+        It is the one store that can grow to hundreds of megabytes and that
+        you might reasonably want to delete and rebuild. Keeping it out of
+        peter.db means doing so cannot take your memory with it.
+        """
+        return self.data_dir / "docs.db"
+
+    @property
+    def recordings_dir(self) -> Path:
+        return self.data_dir / "recordings"
 
     def resolve(self, value: str) -> Path:
         """Resolve a config path value against the project root."""

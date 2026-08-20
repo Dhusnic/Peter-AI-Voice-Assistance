@@ -100,6 +100,33 @@ def check_price(url: str) -> str:
 
 
 @peter_tool(tier="read")
+def compare_across_sites(urls: str, question: str) -> str:
+    """Read several pages at once and compare them.
+
+    Use this for "which of these is cheapest", "is it in stock anywhere",
+    "compare the specs on these three". Each page is read by its own small
+    background model call, so only the comparison comes back rather than
+    several pages of raw text — far cheaper than calling browse_page on each.
+
+    Pages are fetched one after another with the usual spacing between
+    requests, so this takes a while. Expect tens of seconds.
+
+    Args:
+        urls: The pages to compare, comma-separated. Two to five of them.
+        question: What to compare, e.g. "which is cheapest and is it in stock".
+    """
+    from peter.agent.subagents import compare
+
+    targets = [u.strip() for u in urls.split(",") if u.strip()]
+    blocked = [_check_allowed(u) for u in targets]
+    refused = [b for b in blocked if b]
+    if refused:
+        return refused[0]
+
+    return compare(targets, question)
+
+
+@peter_tool(tier="read")
 def browser_status() -> str:
     """Report what page the browser has open, and whether it is running."""
     browser = services().browser()

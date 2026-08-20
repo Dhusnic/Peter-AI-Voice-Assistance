@@ -17,7 +17,7 @@ The first useful finding is that almost none of it goes where you'd guess.
 | Output tokens, same session | 171 |
 | **Output share of all tokens** | **0.3 %** |
 | Fixed prefix sent on *every* request | **7,939 tokens** |
-| — of which: tool schemas (60 tools) | 6,726 tok (85 %) |
+| — of which: tool schemas (60 tools, at time of measurement) | 6,726 tok (85 %) |
 | — of which: system prompt | ~1,100–1,450 tok (15 %) |
 | API round-trips per conversational turn | ~2 |
 

@@ -209,6 +209,20 @@ class MemoryStore:
             ).fetchall()
         return [r["summary"] for r in rows]
 
+    def episodes_since(self, since: float, limit: int = 100) -> list[str]:
+        """Episodes recorded after `since` (epoch seconds), oldest first.
+
+        The work log reads these to recover what happened during the day —
+        focus sessions and meeting notes both leave one behind.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT summary FROM episodes WHERE created_at >= ? "
+                "ORDER BY created_at LIMIT ?",
+                (since, limit),
+            ).fetchall()
+        return [r["summary"] for r in rows]
+
     def related_note(self, topic: str) -> str | None:
         """The single most relevant fact or recent episode for `topic`, if any.
 
@@ -259,6 +273,20 @@ class MemoryStore:
             )
             self._conn.commit()
         return cur.rowcount > 0
+
+    def completed_todos_since(self, since: float) -> list[str]:
+        """To-dos ticked off after `since` (epoch seconds).
+
+        Used by the work log to answer "what did I actually finish today"
+        without it having to read and filter the whole list itself.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT text FROM todos WHERE done = 1 AND completed_at >= ? "
+                "ORDER BY completed_at",
+                (since,),
+            ).fetchall()
+        return [r["text"] for r in rows]
 
     def find_todos(self, needle: str) -> list[tuple[int, str]]:
         pattern = f"%{needle.strip().lower()}%"

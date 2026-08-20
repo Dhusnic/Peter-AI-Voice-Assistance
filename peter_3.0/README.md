@@ -10,16 +10,21 @@ what to do. Adding a capability is one decorated function, not another `elif`.
 
 ```
 mic ─▶ openWakeWord ─▶ faster-whisper ─▶  LLM  ─▶ Piper ─▶ speaker
-                                           │
+ CLI ────────────────────────────────────▶ │ ◀──────────── Telegram
                               Claude · GPT · Gemini
                                            │
-                                     policy gate ──▶ 60 tools
-                                              │              │
-                                        audit log      ┌─────┴──────────┐
-                                                       │                │
-                                              SQLite memory       integrations
-                                              APScheduler    mail · calendar · browser
+                                     policy gate ──▶ 110 tools
+                                           │               │
+                                     audit log       ┌─────┴───────────────┐
+                                                     │                     │
+                                            SQLite memory            integrations
+                                            APScheduler       mail · calendar · browser
+                                                              desktop · dev · phone · docs
 ```
+
+**[→ USER MANUAL](docs/USER_MANUAL.md)** — everything Peter can do, how to
+switch each part on, and what to say to use it.
+[→ ARCHITECTURE](docs/ARCHITECTURE.md) — how it is built and why.
 
 ---
 
@@ -359,7 +364,7 @@ Three rules:
 | [peter/integrations/browser/](peter/integrations/browser/) | Playwright session, extraction, rate limiting, bot detection |
 | [.../browser/interlock.py](peter/integrations/browser/interlock.py) | Refuses any click that commits money |
 | [peter/briefing.py](peter/briefing.py) | The daily briefing, assembled section by section |
-| [peter/tools/](peter/tools/) | The 60 tools themselves |
+| [peter/tools/](peter/tools/) | The 110 tools themselves |
 | [peter/voice/](peter/voice/) | Mic, wake word, Whisper, TTS |
 | [peter/main.py](peter/main.py) | Wiring, CLI, and the turn loop |
 
@@ -406,25 +411,57 @@ Google Tasks, and a daily spoken briefing that degrades section by section when
 something is unreachable.
 
 **Multi-provider** — Claude, GPT and Gemini behind one loop, switchable by
-voice, with per-model cost accounting.
+voice, with per-model cost accounting and a persistent spend ledger in rupees.
 
 **Phase 3** — the browser layer: persistent logged-in session, structured-data
 extraction, per-domain rate limiting, bot-wall detection, and a purchase
 interlock. Read-only browsing and price checks run freely; clicking confirms;
 buying is refused.
 
+**Phase 4** — price and stock watchers: standing watches on product pages,
+swept in the background, alerting on a target reached, a meaningful drop, or a
+return to stock — and never twice for the same price.
+
+**Phase 6** — the phone, two ways. A Telegram bridge carries both directions
+(you ask Peter anything from anywhere; every proactive nudge finds you), and an
+ADB bridge reads SMS for one-time codes. Both read-only where it matters:
+unknown Telegram chats get no reply at all, and there is no send-SMS tool.
+
+**Phase 7** — subagents: comparing a question across several pages fans the
+page-reading out to isolated per-page model calls, so the main conversation
+sees a comparison rather than five pages of raw text.
+
 **Desktop control** — open installed apps, named sites and Gmail accounts in
 your preferred browser, search and open browser bookmarks (with a YouTube
-override browser), play/control YouTube via media keys, and open local
-folders by name.
+override browser), play/control YouTube via media keys, and open local folders
+by name.
 
-**Proactive features** — a meeting-prep nudge shortly before a calendar
-event (who's on it, plus anything relevant said in a past conversation), a
-read-only inbox digest that flags which unread mail plausibly needs a reply,
-and a focus-mode timer that mutes the system and restores it when done. All
-three poll rather than pre-schedule, so a moved meeting or new mail is
-picked up on the next check rather than missed.
+**Vision** — Peter can look at your screen, a file, or the current browser page
+and answer a question about it. "What's this error?" while pointing at a stack
+trace.
 
-**Not built yet** — price and seat *tracking* (Phase 4: scheduled watchers built
-on this layer), cart-building hand-off (Phase 5), SMS via an Android bridge
-(Phase 6), parallel subagents for multi-site comparison (Phase 7).
+**Meetings** — local recording of system audio (what the other people are
+saying), transcribed on-device with faster-whisper in the background, then
+summarised into decisions and action items and written to memory. Audio never
+leaves the machine.
+
+**Development** — git status and commits, GitHub review requests and CI runs
+through the `gh` CLI, a build-failure watcher, an end-of-day work log, and a
+standup written from real activity rather than recollection. Read-only: there
+is no commit, push or checkout tool.
+
+**Documents** — FTS5 index over folders you point at, with incremental
+re-indexing, plus answers built from the passages and cited back to the file.
+
+**Workspaces** — save the set of applications you have open and reopen them
+later; skips anything already running.
+
+**Proactive features** — morning briefing, meeting-prep nudge, read-only inbox
+digest, waiting-on tracker for mail nobody answered, price sweeps, CI failures,
+focus-mode timer, and the daily work log. All poll rather than pre-schedule, all
+survive restarts, all degrade quietly when a service is unreachable, and all
+refuse to repeat themselves.
+
+**Not built** — cart-building hand-off (Phase 5). Peter can walk a checkout to
+the payment screen, but RBI two-factor rules mean it can never complete one, and
+the scraping needed to build a cart breaks constantly. Deliberately skipped.

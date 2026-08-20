@@ -108,11 +108,41 @@ def _todos_section() -> str:
     return f"{len(items)} on your to-do list: {names}."
 
 
+def _waiting_on_section() -> str:
+    """Mail you sent that nobody answered. Opt-in — it costs several IMAP
+    searches, which is a fair price on demand and a poor one every morning
+    unless you actually want it."""
+    from peter.core.services import services
+    from peter.waiting_on import build_waiting_on, spoken_summary
+
+    if not services().config.integrations.waiting_on.enabled:
+        return ""
+    items = build_waiting_on()
+    return spoken_summary(items, limit=3) if items else ""
+
+
+def _prs_section() -> str:
+    """Reviews requested of you. Opt-in for the same reason."""
+    from peter.core.services import services
+    from peter.integrations.dev import gh
+
+    cfg = services().config.integrations.dev
+    if not (cfg.enabled and gh.available(cfg)):
+        return ""
+    reviews = gh.review_requests(cfg, limit=10)
+    if not reviews:
+        return ""
+    named = "; ".join(pr.spoken() for pr in reviews[:3])
+    return f"{len(reviews)} pull request(s) waiting for your review: {named}."
+
+
 _SECTIONS = {
     "calendar": lambda cfg: _calendar_section(cfg, cfg.max_events),
     "mail": lambda cfg: _mail_section(cfg, cfg.max_emails),
     "reminders": lambda cfg: _reminders_section(),
     "todos": lambda cfg: _todos_section(),
+    "waiting_on": lambda cfg: _waiting_on_section(),
+    "pull_requests": lambda cfg: _prs_section(),
 }
 
 

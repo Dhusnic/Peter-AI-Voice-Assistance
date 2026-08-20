@@ -52,8 +52,16 @@ def build_provider(
     config: Config,
     system: str,
     provider: str | None = None,
+    model: str | None = None,
 ) -> LLMProvider:
-    """Construct the configured provider, or the one named."""
+    """Construct the configured provider, or the one named.
+
+    `model` overrides the configured model for this provider only. Used by the
+    background, non-conversational callers — the subagents in particular,
+    where the work is extraction rather than reasoning and a cheaper model is
+    the right tool. It is never used for the main conversation, which always
+    follows config.yml.
+    """
     name = (provider or config.agent.provider).strip().lower()
     if name not in PROVIDERS:
         raise ConfigError(
@@ -68,7 +76,7 @@ def build_provider(
             name, f"Set {env_var} in .env. Get a key at {where}."
         )
 
-    model = model_for(config, name)
+    model = (model or "").strip() or model_for(config, name)
     agent = config.agent
     log.info("using %s/%s", name, model)
 

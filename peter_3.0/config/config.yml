@@ -105,6 +105,49 @@ agent:
   # occasionally rather than trusting it to stay exact.
   usd_to_inr_rate: 88.0
 
+  # Looking at images: the screen, a browser page, a file on disk. One
+  # isolated call per image - never part of the conversation history, so a
+  # screenshot is not re-sent on every later turn of the same conversation.
+  vision:
+    enabled: true
+    # Empty means "use agent.provider / its model above". Every current model
+    # from all three vendors reads images, so pinning one is rarely needed.
+    provider: ""
+    model: ""
+    # Screens are wide. A 3840px grab costs several times a 1600px one and
+    # reads no better - text stays legible well below native resolution.
+    max_width: 1600
+    jpeg_quality: 80
+    max_tokens: 1200
+
+  # Parallel fan-out for reading several pages at once (compare_across_sites).
+  # Pages are fetched one at a time - there is one browser, and the per-domain
+  # spacing is deliberate - but each page is then read by its own small,
+  # isolated model call, so only short findings reach the conversation instead
+  # of five pages of raw text.
+  subagent:
+    enabled: true
+    # Empty means the configured provider/model. A cheaper model is usually
+    # right here: the subagent's job is extraction, not reasoning.
+    provider: ""
+    model: ""
+    max_sites: 5
+    max_chars_per_site: 4000
+    max_workers: 4
+
+  # A daily spend ceiling, in rupees. 0 disables it, which is the default -
+  # a budget that trips mid-sentence is worse than no budget until you have
+  # looked at a week of real numbers (spend_report) and picked one on purpose.
+  #   warn   say something once, then carry on
+  #   block  refuse further turns until midnight
+  # There is deliberately no "drop to the cheap model" option: Gemini's `auto`
+  # routing already picks a model per turn and overwrites it on every call, so
+  # a budget-imposed downgrade would silently not apply on the very setup most
+  # likely to want it.
+  budget:
+    daily_inr: 0
+    action: warn
+
   # Model used for cheap/routine background turns regardless of active
   # provider (e.g. summarizing, quick lookups) — always Claude's cheapest,
   # independent of `provider` above.
@@ -304,3 +347,192 @@ integrations:
     enabled: true
     poll_interval_minutes: 60
     max_emails: 15
+
+  # ------------------------------------------------------------------ reach
+  # Talking to Peter, and being reached by Peter, away from the desk. This is
+  # the multiplier on every proactive feature here: a tray toast only exists
+  # if you are sitting in front of the machine, a Telegram message finds you.
+  #
+  # Setup:
+  #   1. Message @BotFather on Telegram, send /newbot, follow the prompts
+  #   2. Put the token it gives you in .env as TELEGRAM_BOT_TOKEN
+  #   3. Run: python -m peter.main --telegram-setup
+  #   4. Paste the chat id it prints into allowed_chat_ids below
+  telegram:
+    enabled: true
+    # Chat ids allowed to talk to Peter. AN EMPTY LIST MEANS NOBODY, which is
+    # the only safe default: a bot token is a public endpoint and anyone who
+    # guesses the bot name can message it. An unknown chat gets no reply at
+    # all - not even a refusal, which would confirm the bot exists.
+    allowed_chat_ids: []
+    #  - 123456789
+    # Seconds the getUpdates long poll is held open (Telegram allows up to 50).
+    # This is ONE held HTTP request, not repeated polling, so a longer value is
+    # both cheaper and more responsive.
+    long_poll_seconds: 25
+    # Mirror proactive announcements - reminders, meeting prep, the inbox
+    # digest, finished focus sessions, price alerts, CI failures - to the same
+    # chats.
+    forward_notifications: true
+    max_message_chars: 3800
+    timeout_seconds: 40
+
+  # --------------------------------------------------------------- watching
+  # Standing price and stock watches on product pages ("tell me when this gets
+  # cheaper"). Uses the same structured-data extraction as check_price, and the
+  # same per-domain rate limit, so a sweep of several watches on one site takes
+  # minutes by design. That spacing is what keeps the account un-flagged; the
+  # fix for a slow sweep is fewer watches, not a shorter gap.
+  price_watch:
+    enabled: true
+    poll_interval_minutes: 90
+    max_watches: 20
+    # Announce a fall of at least this percent even with no target set. Raise
+    # it if the alerts start feeling like noise.
+    drop_percent: 5
+    alert_on_restock: true
+
+  # -------------------------------------------------------------- recording
+  # Meeting capture, transcribed locally with faster-whisper (the same engine
+  # the wake word uses). The audio never leaves this machine; only the final
+  # summary is a model call, and it goes over text, not audio.
+  recorder:
+    enabled: true
+    # Capture what the speakers are playing - i.e. the other people on the
+    # call - via WASAPI loopback, falling back to the microphone when the
+    # installed sounddevice build cannot do it. Check which you get with the
+    # audio_sources tool.
+    capture_system_audio: true
+    sample_rate: 16000
+    max_minutes: 180
+    # Transcription happens in the background, so a slower and more accurate
+    # model is affordable here in a way it is not for a live voice turn.
+    stt_model: small.en
+    # Start recording automatically when a meeting-prep nudge fires. OFF by
+    # default and deliberately so: recording a conversation without deciding
+    # to is not a default anyone should inherit silently.
+    auto_record_meetings: false
+
+  # -------------------------------------------------------------------- dev
+  # Git, pull requests and CI. Read-only: there is no commit, push, merge or
+  # checkout tool, on purpose. With no repos configured the whole tool group is
+  # skipped, so it costs nothing.
+  dev:
+    enabled: true
+    # Spoken name -> path on disk. The first is the default when none is named.
+    repos: {}
+    #   peter: D:/Peter-AI-Voice-Assistance
+    # Restrict "my commits" to this author. Empty means the repo's own
+    # configured user.email.
+    git_author: ""
+    git_timeout_seconds: 20
+    # The GitHub CLI carries its own auth (`gh auth login`), so Peter never
+    # handles a GitHub token. Install it from cli.github.com.
+    gh_path: gh
+    gh_timeout_seconds: 30
+    # Announce a build that failed, once per run. The first sweep after start
+    # only records what is already failing without shouting about history.
+    ci_watch:
+      enabled: true
+      poll_interval_minutes: 10
+      branches: []          # empty = every branch gh reports on
+      runs_per_repo: 10
+
+  # ---------------------------------------------------------------- worklog
+  # End-of-day record of what actually happened: commits, meetings, focus
+  # sessions, finished to-dos. Written into memory as an episode, so "what was
+  # I doing last Tuesday" survives long after that conversation is gone. Also
+  # backs the standup_notes tool.
+  worklog:
+    enabled: true
+    time: "18:30"
+    days_back: 1
+
+  # ------------------------------------------------------------- waiting on
+  # Mail you sent that nobody answered - the thing that actually falls through
+  # the cracks, because nothing in a mail client shows you an absence.
+  # Read-only: it never nudges anyone and never drafts a follow-up.
+  waiting_on:
+    enabled: true
+    quiet_days: 3         # how long unanswered before it counts
+    lookback_days: 21     # how far back in Sent to look at all
+    max_messages: 40
+
+  # -------------------------------------------------------------- workspace
+  # Saving and restoring a set of open applications ("save this as my migration
+  # setup"). Only windows you can actually see are captured.
+  workspace:
+    enabled: true
+    max_apps: 25
+    # Never captured or relaunched, matched on filename. python.exe is on this
+    # list because restoring it would relaunch Peter itself.
+    ignore_executables:
+      - explorer.exe
+      - searchhost.exe
+      - shellexperiencehost.exe
+      - textinputhost.exe
+      - applicationframehost.exe
+      - systemsettings.exe
+      - startmenuexperiencehost.exe
+      - widgets.exe
+      - lockapp.exe
+      - python.exe
+      - pythonw.exe
+      - cmd.exe
+      - conhost.exe
+
+  # ------------------------------------------------------------------ phone
+  # Reading SMS over ADB - mainly for one-time codes, since Peter can walk a
+  # checkout up to the payment screen but cannot legally complete it.
+  # OFF by default: it needs USB debugging on and this machine authorised on
+  # the handset, which is a deliberate act. Read-only; Peter never sends a
+  # message as you.
+  phone:
+    enabled: false
+    adb_path: adb            # or a full path to adb.exe
+    device_serial: ""        # required only when several devices are attached
+    sms_limit: 10
+    otp_window_minutes: 10
+    timeout_seconds: 20
+
+  # ------------------------------------------------------------------- docs
+  # Full-text search over folders you point Peter at, and answers built from
+  # them with citations. Lives in its own database (data/docs.db) so it can be
+  # deleted and rebuilt without touching memory.
+  docs:
+    enabled: true
+    # Indexed on startup, in the background. Indexing is incremental - an
+    # unchanged file is skipped without being read.
+    folders: []
+    #   - D:/notes
+    extensions:
+      - .md
+      - .txt
+      - .rst
+      - .py
+      - .js
+      - .ts
+      - .java
+      - .go
+      - .sql
+      - .yml
+      - .yaml
+      - .json
+      - .toml
+      - .ini
+      - .cfg
+    max_file_kb: 512        # above this is almost always generated output
+    chunk_chars: 1200
+    max_files: 5000
+    skip_directories:
+      - .git
+      - .venv
+      - venv
+      - node_modules
+      - __pycache__
+      - dist
+      - build
+      - .mypy_cache
+      - .pytest_cache
+      - .idea
+      - .vscode

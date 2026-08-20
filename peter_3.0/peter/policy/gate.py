@@ -167,7 +167,10 @@ class PolicyGate:
                 self.audit.record(
                     tool=name, tier=tier, decision="declined", args=kwargs
                 )
-                return DECLINED_MESSAGE
+                # A confirmer may explain its own refusal — the remote one
+                # declines because nobody is at the machine, which is a
+                # different thing to say than "the user declined".
+                return getattr(self.confirmer, "decline_message", DECLINED_MESSAGE)
 
         return self._execute(name, tier, decision, fn, kwargs)
 

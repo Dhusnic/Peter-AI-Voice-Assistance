@@ -207,6 +207,26 @@ def send_email(
     return f"Sent to {', '.join(recipients)}."
 
 
+@peter_tool(tier="read")
+def waiting_on(days: int = 0) -> str:
+    """List messages you sent that never got a reply.
+
+    The counterpart to checking your inbox: this looks at what *you* are
+    waiting on, which nothing in a mail client shows you. Read-only — it never
+    nudges anyone or drafts a follow-up.
+
+    Args:
+        days: How long a message must have gone unanswered to count. 0 uses
+            the configured default (three days).
+    """
+    from peter.waiting_on import build_waiting_on, spoken_summary
+
+    items = build_waiting_on(quiet_days=days)
+    if not items:
+        return "Nothing you sent is still waiting on a reply."
+    return spoken_summary(items, limit=8)
+
+
 def _addresses(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 

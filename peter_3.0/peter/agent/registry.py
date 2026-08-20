@@ -168,6 +168,14 @@ TOOL_MODULES = (
     "peter.tools.browser_tools",
     "peter.tools.desktop_tools",
     "peter.tools.llm_tools",
+    "peter.tools.vision_tools",
+    "peter.tools.watch_tools",
+    "peter.tools.workspace_tools",
+    "peter.tools.docs_tools",
+    "peter.tools.recorder_tools",
+    "peter.tools.dev_tools",
+    "peter.tools.telegram_tools",
+    "peter.tools.phone_tools",
 )
 
 # Modules whose tools cannot possibly succeed without credentials, and the
@@ -181,6 +189,27 @@ _REQUIRES = {
         lambda c: c.integrations.google.enabled and c.secrets.has_google,
     "peter.tools.desktop_tools":
         lambda c: c.integrations.desktop.enabled,
+    # Needs a repository to look at; with none configured every one of these
+    # can only answer "no repositories are configured".
+    "peter.tools.dev_tools":
+        lambda c: c.integrations.dev.enabled and bool(c.integrations.dev.repos),
+    # Needs both a token and somewhere to send to.
+    "peter.tools.telegram_tools":
+        lambda c: (c.integrations.telegram.enabled and c.secrets.has_telegram
+                   and bool(c.integrations.telegram.allowed_chat_ids)),
+    # Off unless USB debugging is deliberately set up.
+    "peter.tools.phone_tools":
+        lambda c: c.integrations.phone.enabled,
+    "peter.tools.recorder_tools":
+        lambda c: c.integrations.recorder.enabled,
+    "peter.tools.watch_tools":
+        lambda c: c.integrations.price_watch.enabled and c.integrations.browser.enabled,
+    "peter.tools.workspace_tools":
+        lambda c: c.integrations.workspace.enabled,
+    "peter.tools.docs_tools":
+        lambda c: c.integrations.docs.enabled,
+    "peter.tools.vision_tools":
+        lambda c: c.agent.vision.enabled,
 }
 
 

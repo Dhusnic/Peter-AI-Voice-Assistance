@@ -118,6 +118,60 @@ _TOOL_LABELS: dict[str, tuple[str, str]] = {
     # briefing_tools.py
     "briefing_schedule": ("📰", "Checking the briefing schedule"),
     "daily_briefing": ("📰", "Pulling together your briefing"),
+    # focus_tools.py
+    "start_focus_session": ("🎯", "Starting a {minutes}-minute focus session"),
+    "end_focus_session": ("🎯", "Ending the focus session"),
+    "focus_status": ("🎯", "Checking the focus session"),
+    # vision_tools.py
+    "look_at_screen": ("👀", "Looking at your screen"),
+    "look_at_image": ("👀", "Looking at {path}"),
+    "look_at_browser_page": ("👀", "Looking at the page"),
+    # watch_tools.py
+    "watch_price": ("📉", "Watching the price of {url}"),
+    "list_price_watches": ("📉", "Checking what you are watching"),
+    "cancel_price_watch": ("🗑️", "Stopping that price watch"),
+    "check_watches_now": ("📉", "Checking every watched item"),
+    # workspace_tools.py
+    "save_workspace": ("🗂️", "Saving your workspace as {name}"),
+    "restore_workspace": ("🗂️", "Restoring the {name} workspace"),
+    "list_workspaces": ("🗂️", "Checking your saved workspaces"),
+    "delete_workspace": ("🗑️", "Deleting the {name} workspace"),
+    # docs_tools.py
+    "index_folder": ("📚", "Indexing {path}"),
+    "search_docs": ("🔎", "Searching your documents for {query}"),
+    "ask_docs": ("📚", "Reading your documents"),
+    "docs_index_status": ("📚", "Checking the document index"),
+    "forget_folder": ("🧹", "Dropping {path} from the index"),
+    # recorder_tools.py
+    "start_recording": ("🎤", "Starting to record {label}"),
+    "stop_recording": ("⏹️", "Stopping the recording"),
+    "recording_status": ("🎤", "Checking the recording"),
+    "list_recordings": ("🎤", "Checking your recordings"),
+    "read_meeting_notes": ("📝", "Reading the notes from {which}"),
+    "summarise_recording": ("📝", "Transcribing {which}"),
+    "audio_sources": ("🔊", "Checking the audio sources"),
+    # dev_tools.py
+    "list_repos": ("📁", "Checking your repositories"),
+    "git_status": ("🔀", "Checking the repo state"),
+    "recent_commits": ("📜", "Reading recent commits"),
+    "my_pull_requests": ("🔀", "Checking what is waiting on you"),
+    "ci_status": ("🚦", "Checking the builds"),
+    "work_log": ("📓", "Working out what you got done"),
+    "standup_notes": ("📓", "Writing your standup"),
+    # telegram_tools.py
+    "send_to_phone": ("📲", "Sending that to your phone"),
+    "telegram_status": ("📲", "Checking the phone bridge"),
+    # phone_tools.py
+    "read_sms": ("💬", "Reading your messages"),
+    "latest_code": ("🔑", "Looking for the code"),
+    "phone_status": ("📱", "Checking the phone"),
+    # mail_tools.py (waiting-on)
+    "waiting_on": ("📬", "Checking what nobody replied to"),
+    "inbox_digest": ("📬", "Triaging your inbox"),
+    # browser_tools.py (multi-site)
+    "compare_across_sites": ("⚖️", "Comparing those pages"),
+    # llm_tools.py (spend)
+    "spend_report": ("💸", "Adding up what this has cost"),
 }
 
 # control_playback's own `action` argument is snake_case ("volume_up"); worth

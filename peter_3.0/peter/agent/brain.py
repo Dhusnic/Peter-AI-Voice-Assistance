@@ -37,6 +37,21 @@ class TurnResult:
     stop_reason: str | None = None
 
 
+def _usage_snapshot(usage: Usage) -> dict:
+    """Cumulative counters, copied so a turn's own consumption can be derived.
+
+    Providers accumulate usage across the whole session rather than reporting
+    per call, so the only way to get one turn's cost is to subtract.
+    """
+    return {
+        "cost_usd": usage.cost_usd,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read": usage.cache_read,
+        "cache_write": usage.cache_write,
+    }
+
+
 class Brain:
     def __init__(
         self,
@@ -63,6 +78,9 @@ class Brain:
         # requires them to be set.
         self.progress_hook: Callable[[str, ToolCall | None], None] | None = None
         self.retry_hook: Callable[[str, int, int, float], None] | None = None
+        # Set once the daily cap has been mentioned, so a `warn` budget says
+        # something the first time it is passed and not on every turn after.
+        self._budget_warned = False
 
     # ------------------------------------------------------------------ public
     @property
@@ -105,10 +123,15 @@ class Brain:
 
     def ask(self, user_text: str) -> TurnResult:
         """Run one full turn and return what should be spoken."""
+        refusal = self._check_budget()
+        if refusal is not None:
+            return refusal
+
         self._session_turns.append(user_text)
         self._remember_dropped_turns()
         self.provider.trim(self.config.agent.max_history_messages)
 
+        before = _usage_snapshot(self.provider.usage)
         result = loop.run_turn(
             provider=self.provider,
             tools=registry.tool_specs(),
@@ -123,6 +146,7 @@ class Brain:
         )
 
         self.provider.usage.turns += 1
+        self._record_spend(before)
         return TurnResult(
             text=result.text,
             tool_calls=result.tool_calls,
@@ -144,6 +168,60 @@ class Brain:
         return total.summary(
             self.provider.name, self.provider.model, self.config.agent.usd_to_inr_rate
         )
+
+    # -------------------------------------------------------------- spending
+    def _check_budget(self) -> TurnResult | None:
+        """Enforce the daily cap, if one is set. Returns a refusal, or None.
+
+        Checked before the turn rather than after, because the only moment a
+        cap can actually stop anything is before the request goes out — a
+        turn's cost is not knowable until it has already been paid for.
+        """
+        cfg = self.config.agent.budget
+        if cfg.daily_inr <= 0:
+            return None
+
+        from peter import spend
+
+        try:
+            state = spend.budget_state(self.config, services().spend())
+        except Exception:  # a broken ledger must never stop Peter answering
+            log.debug("budget check failed", exc_info=True)
+            return None
+
+        if not state.exceeded:
+            self._budget_warned = False
+            return None
+
+        if state.blocked:
+            log.warning("budget: blocking turn — %s", state.message())
+            return TurnResult(
+                text=state.message()
+                + " I have stopped for today. Raise agent.budget.daily_inr in "
+                "config.yml, or set its action to warn, to carry on."
+            )
+
+        if not getattr(self, "_budget_warned", False):
+            self._budget_warned = True
+            log.warning("budget: %s", state.message())
+            services().say(state.message() + " Carrying on anyway.")
+        return None
+
+    def _record_spend(self, before: dict) -> None:
+        """Append this turn's usage to the ledger. Never fails a turn."""
+        usage = self.provider.usage
+        try:
+            services().spend().record(
+                provider=self.provider.name,
+                model=self.provider.model,
+                cost_usd=usage.cost_usd - before["cost_usd"],
+                input_tokens=usage.input_tokens - before["input_tokens"],
+                output_tokens=usage.output_tokens - before["output_tokens"],
+                cache_read=usage.cache_read - before["cache_read"],
+                cache_write=usage.cache_write - before["cache_write"],
+            )
+        except Exception:
+            log.debug("could not record spend for this turn", exc_info=True)
 
     # ----------------------------------------------------------------- private
     def _remember_dropped_turns(self) -> None:

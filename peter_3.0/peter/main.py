@@ -6,6 +6,7 @@
     python -m peter.main --health        check every subsystem and exit
     python -m peter.main --google-auth   authorise Calendar and Tasks
     python -m peter.main --briefing      print today's briefing and exit
+    python -m peter.main --telegram-setup  find your Telegram chat id
 
 Two things this does that peter_1.0 did not:
 
@@ -29,6 +30,7 @@ import time
 from peter.agent import registry
 from peter.agent.brain import Brain
 from peter.briefing import build_briefing, schedule_briefing
+from peter.ci_watch import schedule_ci_watch
 from peter.core.config import Config, get_config
 from peter.core.errors import ConfigError, PeterError
 from peter.core.logging import configure_logging
@@ -38,8 +40,11 @@ from peter.meeting_prep import schedule_meeting_prep
 from peter.memory.store import MemoryStore
 from peter.policy.audit import AuditLog
 from peter.policy.gate import ConsoleConfirmer, Policy, PolicyGate
+from peter.price_watch import schedule_price_watches
 from peter.scheduler.jobs import Scheduler
+from peter.telegram_bridge import RemoteConfirmer, TelegramBridge
 from peter.voice.tts import PrintSpeaker
+from peter.worklog import schedule_worklog
 
 log = logging.getLogger("peter")
 
@@ -79,12 +84,23 @@ class Peter:
         self.speaker = None
         self.tray = None
 
+        # Turns arrive from the microphone, the console and — once the bridge
+        # is up — a Telegram thread. The provider holds one conversation
+        # history, so two turns running at once would interleave into it.
+        self._turn_lock = threading.Lock()
+        self.telegram = None
+
     # ------------------------------------------------------------- lifecycle
     def start(self) -> None:
         self.container.scheduler.start()
         schedule_briefing(self.container.scheduler, self.config)
         schedule_meeting_prep(self.container.scheduler, self.config)
         schedule_inbox_digest(self.container.scheduler, self.config)
+        schedule_price_watches(self.container.scheduler, self.config)
+        schedule_worklog(self.container.scheduler, self.config)
+        schedule_ci_watch(self.container.scheduler, self.config)
+        self._start_telegram()
+        self._index_documents()
         log.info(
             "%s/%s | %d tools | %d job(s) scheduled",
             self.brain.provider_name,
@@ -93,8 +109,34 @@ class Peter:
             len(self.container.scheduler.list_jobs(include_system=True)),
         )
 
+    def _start_telegram(self) -> None:
+        """Bring up the phone bridge, if it is configured."""
+        self.telegram = TelegramBridge(self.config, handler=self.handle_remote)
+        if not self.telegram.start():
+            self.telegram = None
+
+    def _index_documents(self) -> None:
+        """Index the configured document folders, off the startup path.
+
+        A first pass over a large tree takes long enough to be noticeable, and
+        nothing about starting up should wait on it.
+        """
+        from peter.docs_index import index_configured_folders
+
+        cfg = self.config.integrations.docs
+        if not (cfg.enabled and cfg.folders):
+            return
+        threading.Thread(
+            target=index_configured_folders,
+            args=(self.config,),
+            name="doc-index",
+            daemon=True,
+        ).start()
+
     def shutdown(self) -> None:
         self.stopping.set()
+        if self.telegram is not None:
+            self.telegram.stop()
         if self.speaker is not None:
             self.speaker.shutdown()
         if self.mic is not None:
@@ -113,6 +155,27 @@ class Peter:
     # ------------------------------------------------------------- turn logic
     def handle(self, text: str) -> str:
         """Run one turn. Never raises — a failure becomes something speakable."""
+        with self._turn_lock:
+            return self._run_turn(text)
+
+    def handle_remote(self, text: str) -> str:
+        """Run one turn on behalf of a remote client (Telegram).
+
+        Identical to `handle` except for the confirmer: a `confirm`-tier tool
+        cannot be answered from a phone, so it declines immediately with an
+        explanation instead of blocking on a console prompt nobody is sitting
+        at. Swapping the confirmer is safe because it happens inside the same
+        lock every turn holds, so no local turn can be running.
+        """
+        with self._turn_lock:
+            previous = self.gate.confirmer
+            self.gate.set_confirmer(RemoteConfirmer())
+            try:
+                return self._run_turn(text)
+            finally:
+                self.gate.set_confirmer(previous)
+
+    def _run_turn(self, text: str) -> str:
         try:
             result = self.brain.ask(text)
         except PeterError as exc:
@@ -302,6 +365,57 @@ def _cmd_google_auth(config: Config) -> int:
     return 0
 
 
+def _cmd_telegram_setup(config: Config) -> int:
+    """Find the chat id to put in config.yml.
+
+    A chat id is not discoverable from the Telegram UI or from the bot token —
+    the only way to learn it is to receive a message and read the id off the
+    update, which is exactly what this does.
+    """
+    from peter.telegram_bridge import find_chat_ids
+
+    if not config.secrets.has_telegram:
+        print(
+            "\nNo TELEGRAM_BOT_TOKEN in .env.\n\n"
+            "  1. Open Telegram and message @BotFather\n"
+            "  2. Send /newbot and follow the prompts\n"
+            "  3. Copy the token it gives you into .env as TELEGRAM_BOT_TOKEN\n"
+            "  4. Run this command again\n"
+        )
+        return 1
+
+    try:
+        from peter.integrations import telegram
+
+        username = telegram.client(config).me()
+    except PeterError as exc:
+        print(f"\nCould not reach Telegram: {exc}")
+        if getattr(exc, "user_action", ""):
+            print(exc.user_action)
+        return 1
+
+    print(f"\nBot is {username}.")
+    print(f"Open Telegram, find {username}, and send it any message.")
+    print("Waiting up to 60 seconds...\n")
+
+    found = find_chat_ids(config, seconds=60)
+    if not found:
+        print("No message arrived. Send one to the bot and try again.")
+        return 1
+
+    print("Found:\n")
+    for chat_id, who in found:
+        print(f"  {chat_id}  ({who})")
+    print("\nAdd it to config/config.yml:\n")
+    print("  integrations:")
+    print("    telegram:")
+    print("      allowed_chat_ids:")
+    for chat_id, _who in found:
+        print(f"        - {chat_id}")
+    print()
+    return 0
+
+
 def _cmd_briefing(config: Config) -> int:
     registry.load_all_tools(config=config)
     container = ServiceContainer(config)
@@ -332,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="authorise Google Calendar and Tasks")
     parser.add_argument("--briefing", action="store_true",
                         help="print today's briefing and exit")
+    parser.add_argument("--telegram-setup", action="store_true",
+                        help="find your Telegram chat id and exit")
     args = parser.parse_args(argv)
 
     # Windows consoles default to cp1252, which cannot encode a rupee sign or
@@ -379,6 +495,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_health(config)
     if args.briefing:
         return _cmd_briefing(config)
+    if args.telegram_setup:
+        return _cmd_telegram_setup(config)
 
     if not config.secrets.any_llm_key:
         log.error(

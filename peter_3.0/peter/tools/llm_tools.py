@@ -93,3 +93,19 @@ def llm_status() -> str:
             "above undercounts."
         )
     return "\n".join(lines)
+
+
+@peter_tool(tier="read")
+def spend_report(days: int = 7) -> str:
+    """Report what Peter has cost in rupees, per day and per model.
+
+    Use this for anything about running cost over time — "how much have I
+    spent this week", "is Gemini actually cheaper", "what did today cost".
+    For the current session only, llm_status is enough.
+
+    Args:
+        days: How far back to total. 1 is today.
+    """
+    from peter import spend
+
+    return spend.report(days)
