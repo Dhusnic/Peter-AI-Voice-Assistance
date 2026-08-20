@@ -124,6 +124,23 @@ class _PhaseTimer:
         stack[self.name] = stack.get(self.name, 0.0) + elapsed_ms
 
 
+def record_phase(name: str, elapsed_ms: float) -> None:
+    """Add a precomputed duration to the current call's phase breakdown.
+
+    `phase()`'s `with` block can only time a span this thread is inside from
+    start to finish. Some sub-steps finish asynchronously on another thread
+    (TTS's first audio block, played back by the speaker's worker thread) —
+    the caller times those itself and reports the result here, on the same
+    thread that will later call `take_phases()`, so it still composes into
+    one breakdown per call.
+    """
+    stack = getattr(_local, "phases", None)
+    if stack is None:
+        stack = {}
+        _local.phases = stack
+    stack[name] = stack.get(name, 0.0) + elapsed_ms
+
+
 def reset_phases() -> None:
     """Clear any phases left over from a previous call on this thread.
     Called by the policy gate immediately before a tool body runs."""

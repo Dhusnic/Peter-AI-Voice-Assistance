@@ -244,6 +244,8 @@ class SttConfig(BaseModel):
     min_speech: float = Field(default=0.3, gt=0)
     noise_margin: float = Field(default=3.0, gt=1)
     min_threshold: float = Field(default=0.006, gt=0)
+    adaptive_noise: bool = True
+    adaptive_rate: float = Field(default=0.1, gt=0, le=1)
 
 
 class TtsConfig(BaseModel):

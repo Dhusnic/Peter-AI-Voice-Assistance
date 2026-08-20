@@ -16,6 +16,8 @@ import ctypes
 import logging
 import time
 
+from peter.core.errors import VoiceError
+
 log = logging.getLogger(__name__)
 
 _YES = {"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "go ahead", "do it",
@@ -73,7 +75,19 @@ class VoiceConfirmer:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.mic.flush()
-            heard = self.transcriber.listen(self.mic).strip().lower().rstrip(".!?")
+            try:
+                heard = self.transcriber.listen(self.mic).strip().lower().rstrip(".!?")
+            except VoiceError as exc:
+                # "Every confirmer fails closed: timeout, error, or ambiguity
+                # all mean no" (see module docstring) — a broken STT call
+                # mid-confirmation must not crash the turn, and must not be
+                # silently treated as an answer either. Escalate to the
+                # dialog exactly like an unclear spoken answer already does.
+                log.warning(
+                    "speech recognition failed during confirmation (%s); "
+                    "escalating to dialog", exc,
+                )
+                return self.fallback.ask(prompt, timeout)
             if not heard:
                 continue
             log.debug("confirmation heard: %r", heard)

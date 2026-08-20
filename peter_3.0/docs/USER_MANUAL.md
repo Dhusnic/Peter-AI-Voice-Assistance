@@ -1125,6 +1125,39 @@ custom one is possible; point `voice.wake.model` at the resulting `.onnx` file.
 **Voice mode does not hear me / triggers constantly**
 Run `--devices` to check the right microphone is default. Then tune
 `voice.wake.threshold` (lower = more sensitive) and `voice.stt.noise_margin`.
+Note that `voice.stt.adaptive_noise` (on by default) blends a little of every
+utterance's ambient level into the noise floor, so it drifts with the room
+over a session rather than staying fixed at the one startup snapshot — if
+that drift is causing trouble in a room with very inconsistent background
+noise, set `voice.stt.adaptive_noise: false` to pin it to the startup value.
+
+**Peter says "Didn't catch that."**
+Normal, not an error: the wake word fired but nothing usable came through in
+time (too quiet, too short, or you paused too long before speaking). Try
+again, closer to the mic or a bit louder. This is intentional — previously
+this case was silent and indistinguishable from the wake word not firing at
+all, which meant you couldn't tell whether Peter had missed you entirely.
+
+**Peter's voice suddenly sounds different / robotic mid-session**
+The configured TTS engine (Piper or Edge) failed twice in a row — usually a
+missing/corrupt Piper voice file, or no network for Edge — and Peter
+automatically fell back to the Windows SAPI voice for the rest of the session
+rather than going silent. Check the log for "switching to the Windows SAPI
+fallback" to see why, fix the underlying cause (e.g. restore your network
+connection for `edge`), and restart Peter to go back to the configured voice.
+
+**Voice mode fails to start**
+A bad `voice.stt.model` name, a missing/invalid `voice.wake.model` path, or
+an unavailable audio device now prints the reason and drops into `--text`
+mode automatically instead of crashing — read the printed message, fix the
+setting in `config.yml`, and restart into `--voice` again.
+
+**Peter goes silent for a bit, then hears me again on its own**
+Expected, if you unplugged/replugged a USB microphone or a driver briefly
+reset the input device — Peter notices the stream died and reopens it on its
+own every couple of seconds until it succeeds, no restart needed. Check the
+log for "microphone stream is not active" / "microphone reconnected" if you
+want to confirm that's what happened.
 
 **The recording only has my voice on it**
 System-audio capture was unavailable and it fell back to the microphone. Ask

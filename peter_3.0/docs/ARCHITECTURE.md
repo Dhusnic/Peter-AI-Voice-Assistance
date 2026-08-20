@@ -350,6 +350,97 @@ stateDiagram-v2
   and tested without a microphone, wake-word model, or TTS engine in the
   loop at all.
 
+**Error handling.** Every boundary in this layer — PortAudio (mic/speaker
+device), Whisper, openWakeWord, the TTS engines — can fail at runtime, not
+just at startup, so each one is wrapped rather than left to raise a raw
+exception into the loop:
+
+- `Microphone.start()`, `Transcriber.__init__`/`transcribe()`, and
+  `WakeWordDetector._load()` convert whatever the underlying library raises
+  into `VoiceError` (`peter/core/errors.py`, an `IntegrationError` subclass),
+  so callers can catch voice failures specifically instead of `except
+  Exception`. Construction failures (bad model name, bad device index,
+  missing wake-word file) are `recoverable=False`; a single bad transcription
+  defaults to `recoverable=True` — the next utterance is worth trying.
+- `run_voice()` wraps all voice-subsystem construction (mic, Whisper,
+  wake word) in one try/except. On failure it logs the reason, prints it
+  (there is no speaker yet at that point), and **falls back to `run_text()`**
+  instead of crashing the process — the same "degrade, don't refuse to
+  start" rule `build_engine()` already applied to a missing Piper voice file,
+  now applied one level up.
+- `build_engine()` tries the configured TTS engine first, then falls back
+  through the remaining two in a fixed `piper → edge → sapi` order rather
+  than stopping at one fallback — SAPI is always available on Windows, so
+  this should only ever bottom out in practice, never actually fail.
+- `Speaker` retries a failed sentence once immediately (a dropped frame or a
+  flaky Edge request is usually transient), and after two consecutive
+  failures downgrades `self.engine` to a fresh `SapiEngine` for the rest of
+  the session — worse voice quality, but Peter keeps talking instead of
+  going silent. It does not auto-revert; restart to retry the configured
+  engine once the underlying problem (usually network, for `edge`) clears.
+- `_voice_tick()` distinguishes "wake word never fired" (stays silent — no
+  false-trigger nagging) from "wake word fired but nothing usable came
+  through" (speaks "Didn't catch that.") — previously both were silent and
+  indistinguishable to the user, which is the concrete accessibility gap
+  this closes. An STT `VoiceError` gets the same "catch, speak, keep going"
+  treatment `_run_turn()` already gives LLM/tool failures: logged, spoken via
+  `exc.spoken()`, loop continues.
+
+**Adaptive noise floor.** `Transcriber.calibrate()` still takes one 0.7s
+snapshot at startup, but `record_utterance()`'s pre-speech lead-in frames
+(already being read regardless) now blend into `noise_floor` via an
+exponential moving average after every utterance (`voice.stt.adaptive_noise`,
+default on; `adaptive_rate` controls how fast). A startup-only calibration
+goes stale the moment the room's ambient noise changes; this keeps it current
+at no extra mic time.
+
+**Latency visibility.** The wake→reply pipeline now uses `peter/perf.py`'s
+`phase()`/`reset_phases()`/`take_phases()` — the same mechanism
+`PolicyGate._execute()` already applies to every tool call — bracketing
+`record`, `transcribe`, and `think` (the `Brain.ask()` call), plus a fourth
+phase, `tts_first_audio`, measuring the true "time to first sound": `Speaker`
+tracks the moment the first audio block of a reply actually starts playing
+(`_speak_one`, on its own worker thread) via a `threading.Event`, and
+`_voice_tick()` waits on `Speaker.wait_for_first_audio()` before recording it.
+That duration can't be measured with a synchronous `with phase(...):` block
+since it completes on a different thread, so it's reported through
+`perf.record_phase(name, elapsed_ms)` instead — a small addition to
+`peter/perf.py` for exactly this "the end of the span is only known
+asynchronously" case. One row per voice turn lands in `perf_calls` under the
+tool name `"voice_turn"`, so `--perf-report` shows exactly where wake-to-reply
+latency goes instead of the single bundled debug log line that existed
+before — and specifically separates "how long until Peter started
+responding" from "how long the reply happened to be," which total wall time
+alone conflates.
+
+**Microphone self-heal.** `Microphone.read()` — called on every voice-loop
+tick regardless — now also checks whether the PortAudio input stream is
+still `.active`. If it isn't (a USB mic unplugged, a driver reset) it tries
+to reopen the device, rate-limited to one attempt per 2 seconds so a
+genuinely-gone device doesn't spin. This mirrors
+`peter/integrations/phone/adb.py`'s detect-and-reconnect pattern for a
+dropped wireless ADB session — same shape, applied to the mic: a caller just
+sees `read()` return `None` (indistinguishable from "nobody is talking right
+now") during the outage, and frames resume on their own once the device is
+back, no restart required.
+
+**`VoiceConfirmer` (`peter/ui/confirm.py`) now actually fails closed on an STT
+error**, not just on timeout/ambiguity as its own docstring already claimed.
+`transcriber.listen()` inside `ask()`'s answer-listening loop can raise
+`VoiceError`; unhandled, that would have crashed the confirmation (and the
+whole turn) instead of escalating to `self.fallback` (a modal
+`DesktopConfirmer` dialog) the way an unclear spoken answer already does. Now
+it does the same thing on either failure mode — one `except VoiceError` away
+from the gap this hardening pass would otherwise have quietly introduced,
+since STT raising at all is new behavior from this same pass.
+
+**SAPI's barge-in limitation is now disclosed, not just documented here.**
+`SapiEngine.__init__` logs once, at construction, that barge-in on this
+engine only lands between sentences rather than mid-word — true whether SAPI
+is the configured engine or something else fell back/degraded to it — so the
+reason interruption feels sluggish is discoverable in the log rather than
+only in this file.
+
 ---
 
 ### 2.2 Agent Core — `peter/agent/brain.py` + `peter/llm/`

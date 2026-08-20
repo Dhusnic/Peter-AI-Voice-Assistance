@@ -197,6 +197,12 @@ voice:
     # Speech must exceed the measured room noise floor by this factor.
     noise_margin: 3.0
     min_threshold: 0.006
+    # Blend each utterance's pre-speech ambient level into the noise floor
+    # (weight below), so it stays current if the room gets noisier or
+    # quieter after the one-time startup calibration. Set false to keep the
+    # startup snapshot fixed for the whole session.
+    adaptive_noise: true
+    adaptive_rate: 0.1
 
   tts:
     engine: piper           # piper (local) | edge (online) | sapi (windows)

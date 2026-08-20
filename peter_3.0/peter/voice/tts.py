@@ -26,12 +26,14 @@ import logging
 import queue
 import re
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
 
 from peter.core.config import get_config
+from peter.core.errors import VoiceError
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +163,11 @@ class SapiEngine(_Engine):
         self._engine = pyttsx3.init("sapi5")
         self._engine.setProperty("rate", rate)
         self._engine.setProperty("volume", 1.0)
+        log.info(
+            "using the Windows SAPI voice — barge-in only lands between "
+            "sentences here, not mid-word like Piper/Edge, because pyttsx3 "
+            "has no streaming API to interrupt mid-utterance."
+        )
 
     def speak_blocking(self, text: str) -> None:
         self._engine.say(text)
@@ -181,22 +188,42 @@ def build_engine() -> _Engine:
 
     A missing Piper voice file is a setup step nobody has done yet, not a fatal
     error — Peter should still talk, and say so, rather than fail to boot.
+    Tries the configured engine first, then the remaining two in a fixed
+    piper -> edge -> sapi order, so any single broken engine (missing voice
+    file, no network, no SAPI voices registered) still leaves two more
+    chances before Peter goes silent.
     """
     cfg = get_config().voice.tts
     choice = cfg.engine.strip().lower()
+    if choice not in ("piper", "edge", "sapi"):
+        log.warning("unknown voice.tts.engine %r, using edge", choice)
+        choice = "edge"
 
-    if choice == "piper":
+    builders = {
+        "piper": lambda: PiperEngine(cfg.piper_voice),
+        "edge": lambda: EdgeEngine(cfg.edge_voice),
+        "sapi": lambda: SapiEngine(cfg.sapi_rate),
+    }
+    order = [choice] + [name for name in ("piper", "edge", "sapi") if name != choice]
+
+    last_exc: Exception | None = None
+    for name in order:
         try:
-            return PiperEngine(cfg.piper_voice)
+            engine = builders[name]()
         except Exception as exc:
-            log.warning("Piper unavailable (%s) — falling back to edge-tts", exc)
-            return EdgeEngine(cfg.edge_voice)
-    if choice == "edge":
-        return EdgeEngine(cfg.edge_voice)
-    if choice == "sapi":
-        return SapiEngine(cfg.sapi_rate)
-    log.warning("unknown voice.tts.engine %r, using edge", choice)
-    return EdgeEngine(cfg.edge_voice)
+            log.warning(
+                "%s unavailable (%s)%s", name, exc,
+                "" if name == choice else " — trying the next fallback",
+            )
+            last_exc = exc
+            continue
+        return engine
+
+    raise VoiceError(
+        f"no text-to-speech engine could be started: {last_exc}",
+        recoverable=False,
+        user_action="Check voice.tts settings in config.yml.",
+    )
 
 
 class Speaker:
@@ -208,6 +235,22 @@ class Speaker:
         self._stop = threading.Event()
         self._idle = threading.Event()
         self._idle.set()
+        # Runtime fallback bookkeeping: two failed sentences in a row (each
+        # itself already retried once) downgrades to the SAPI engine for the
+        # rest of the session, so a flaky network (edge-tts) or a broken
+        # Piper voice degrades Peter's voice instead of going silent.
+        self._consecutive_failures = 0
+        self._degraded = False
+        # First-audio tracking: "time to first sound" is what perceived
+        # latency actually is, distinct from total wall time (which is
+        # mostly just however long the reply is). _first_audio_event fires
+        # the moment the current reply's first block starts playing (or
+        # immediately, for a reply with nothing to say), so a caller on
+        # another thread can wait for it without waiting for the whole
+        # reply to finish.
+        self._first_audio_started = 0.0
+        self._first_audio_at: float | None = None
+        self._first_audio_event = threading.Event()
         self._worker = threading.Thread(
             target=self._run, name="peter-tts", daemon=True
         )
@@ -216,9 +259,27 @@ class Speaker:
     # -------------------------------------------------------------- interface
     def say(self, text: str) -> None:
         """Queue text for speech. Returns immediately."""
-        for sentence in split_sentences(text):
+        sentences = split_sentences(text)
+        self._first_audio_started = time.perf_counter()
+        self._first_audio_at = None
+        self._first_audio_event.clear()
+        if not sentences:
+            self._first_audio_event.set()  # nothing will ever play — don't block a waiter
+            return
+        for sentence in sentences:
             self._idle.clear()
             self._queue.put(sentence)
+
+    def wait_for_first_audio(self, timeout: float | None = None) -> float | None:
+        """Block until the current reply's first audio block starts playing
+        (or times out, or nothing will ever play), then return the elapsed
+        milliseconds since the say() call that started it. None if it timed
+        out or no audio was ever produced (e.g. every engine failed)."""
+        if not self._first_audio_event.wait(timeout):
+            return None
+        if self._first_audio_at is None:
+            return None
+        return (self._first_audio_at - self._first_audio_started) * 1000
 
     def stop(self) -> None:
         """Cut playback now and drop anything queued. This is barge-in."""
@@ -254,13 +315,48 @@ class Speaker:
             # A stop that arrived while this item sat in the queue applies to it.
             self._stop.clear()
             try:
-                self._speak_one(sentence)
-            except Exception:
-                log.exception("TTS failed for: %.60s", sentence)
+                self._speak_with_retry(sentence)
             finally:
                 self._queue.task_done()
                 if self._queue.empty():
                     self._idle.set()
+
+    def _speak_with_retry(self, sentence: str) -> None:
+        """Speak one sentence, retrying once, degrading the engine on repeat
+        failure. A barge-in (stop() mid-sentence) is not a failure — it is
+        the normal `stream.abort()` early-return in `_speak_one`, not an
+        exception — so only genuine engine errors count here."""
+        try:
+            self._speak_one(sentence)
+            self._consecutive_failures = 0
+            return
+        except Exception as exc:
+            log.warning("TTS failed for %.60s (%s); retrying once", sentence, exc)
+
+        try:
+            self._speak_one(sentence)
+            self._consecutive_failures = 0
+            return
+        except Exception:
+            log.exception("TTS failed twice for: %.60s", sentence)
+
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= 2 and not self._degraded:
+            self._degrade_to_sapi()
+
+    def _degrade_to_sapi(self) -> None:
+        if isinstance(self.engine, SapiEngine):
+            return
+        log.warning(
+            "TTS engine having repeated trouble — switching to the Windows "
+            "SAPI fallback for the rest of this session. Restart Peter to "
+            "retry the configured engine."
+        )
+        try:
+            self.engine = SapiEngine(get_config().voice.tts.sapi_rate)
+            self._degraded = True
+        except Exception:
+            log.exception("SAPI fallback also failed to start; TTS may stay silent")
 
     def _speak_one(self, sentence: str) -> None:
         if isinstance(self.engine, SapiEngine):
@@ -280,6 +376,9 @@ class Speaker:
                 if self._stop.is_set():
                     stream.abort()
                     return
+                if self._first_audio_at is None:
+                    self._first_audio_at = time.perf_counter()
+                    self._first_audio_event.set()
                 stream.write(np.ascontiguousarray(block, dtype=np.float32))
 
 

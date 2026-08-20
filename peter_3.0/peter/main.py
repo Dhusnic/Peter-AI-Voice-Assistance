@@ -33,8 +33,9 @@ from peter.agent import registry
 from peter.agent.brain import Brain
 from peter.briefing import build_briefing, schedule_briefing
 from peter.ci_watch import schedule_ci_watch
+from peter import perf
 from peter.core.config import Config, get_config
-from peter.core.errors import ConfigError, PeterError
+from peter.core.errors import ConfigError, PeterError, VoiceError
 from peter.core.logging import configure_logging
 from peter.core.services import ServiceContainer, set_container
 from peter.inbox_digest import schedule_inbox_digest
@@ -245,15 +246,34 @@ class Peter:
         from peter.voice.tts import Speaker
         from peter.voice.wake import WakeWordDetector
 
-        self.speaker = Speaker()
-        self.container.speaker = self.speaker
+        try:
+            self.speaker = Speaker()
+            self.container.speaker = self.speaker
 
-        self.mic = Microphone()
-        self.mic.start()
+            self.mic = Microphone()
+            self.mic.start()
 
-        self.transcriber = Transcriber()
-        self.transcriber.calibrate(self.mic)
-        self.detector = WakeWordDetector()
+            self.transcriber = Transcriber()
+            self.transcriber.calibrate(self.mic)
+            self.detector = WakeWordDetector()
+        except Exception as exc:
+            # Voice hardware/models are the one subsystem that can fail before
+            # there is anything to speak an apology with — degrade to text
+            # mode rather than crash the process, same philosophy as
+            # build_engine()'s Piper-missing fallback, one level up.
+            log.error("voice mode could not start: %s", exc)
+            print(f"\nVoice mode could not start: {exc}\nFalling back to text mode.\n")
+            if self.mic is not None:
+                self.mic.stop()
+            if self.speaker is not None:
+                self.speaker.shutdown()
+            self.speaker = None
+            self.container.speaker = None
+            self.mic = None
+            self.transcriber = None
+            self.detector = None
+            self.run_text()
+            return
 
         self.gate.set_confirmer(
             VoiceConfirmer(self.speaker, self.transcriber, self.mic)
@@ -295,24 +315,50 @@ class Peter:
             return
 
         started = time.perf_counter()
+        cpu_started = perf.cpu_time()
+        perf.reset_phases()
         self.tray.set_state("listening")
         self.mic.flush()
 
-        heard = self.transcriber.listen(self.mic)
-        if not heard:
-            self.tray.set_state("idle")
-            return
-
-        log.info("heard: %s", heard)
-        self.tray.set_state("thinking")
-        reply = self.handle(heard)
+        ok = True
+        try:
+            heard = self.transcriber.listen(self.mic)
+        except VoiceError as exc:
+            # Same "catch, speak, keep going" pattern _run_turn() uses for
+            # LLM/tool failures — a broken STT call must not drop the whole
+            # turn silently, and it must not crash the loop either.
+            log.warning("STT failed: %s", exc)
+            reply = exc.spoken()
+            ok = False
+        else:
+            if not heard:
+                # Wake fired and the user was expected to say something, but
+                # nothing usable came through (too quiet, too short, timed
+                # out). Silence here is indistinguishable from the wake word
+                # never firing at all — a real accessibility gap — so this
+                # is the one case that gets a short spoken acknowledgment.
+                reply = "Didn't catch that."
+            else:
+                log.info("heard: %s", heard)
+                self.tray.set_state("thinking")
+                with perf.phase("think"):
+                    reply = self.handle(heard)
 
         self.tray.set_state("speaking")
         log.info("saying: %s", reply)
         self.speaker.say(reply)
+
+        # Blocks only until the first block of audio actually starts playing
+        # — not the whole reply — so this is the true "how snappy did this
+        # feel" number, distinct from total wall time which is dominated by
+        # however long the reply happens to be.
+        first_audio_ms = self.speaker.wait_for_first_audio(timeout=10.0)
+        if first_audio_ms is not None:
+            perf.record_phase("tts_first_audio", first_audio_ms)
+        self._record_voice_perf(started, cpu_started, ok=ok)
         log.debug(
-            "wake to first audio: %.0fms | %s",
-            (time.perf_counter() - started) * 1000,
+            "wake to first audio: %s | %s",
+            f"{first_audio_ms:.0f}ms" if first_audio_ms is not None else "n/a",
             self.brain.usage_summary(),
         )
 
@@ -320,6 +366,24 @@ class Peter:
         self.detector.reset()
         self.mic.flush()
         self.tray.set_state("idle")
+
+    def _record_voice_perf(self, started: float, cpu_started: float, *, ok: bool) -> None:
+        """Best-effort — mirrors PolicyGate._record_perf so wake-to-reply
+        latency shows up in --perf-report broken down by phase, the same way
+        every tool call already does. A broken perf log must never break the
+        voice loop."""
+        if self.container.perf is None:
+            return
+        wall_ms = (time.perf_counter() - started) * 1000
+        cpu_ms = max(0.0, (perf.cpu_time() - cpu_started) * 1000)
+        wait_ms = max(0.0, wall_ms - cpu_ms)
+        phases = perf.take_phases()
+        try:
+            self.container.perf.record(
+                "voice_turn", wall_ms, cpu_ms, wait_ms, phases=phases, ok=ok
+            )
+        except Exception:
+            log.debug("perf recording failed for voice_turn", exc_info=True)
 
 
 # ------------------------------------------------------------------ commands

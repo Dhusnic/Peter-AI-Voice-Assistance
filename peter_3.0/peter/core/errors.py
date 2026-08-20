@@ -80,3 +80,18 @@ class NotConfiguredError(IntegrationError):
 
 class ToolError(PeterError):
     """A tool could not do what was asked, for an ordinary reason."""
+
+
+class VoiceError(IntegrationError):
+    """Mic, wake-word, STT, or TTS failed.
+
+    Defaults to recoverable=True: almost every voice failure (a dropped audio
+    callback, a flaky Edge TTS request, one bad Whisper call) is worth trying
+    again next turn rather than treating as fatal. Startup-time failures
+    (missing model file, bad device index) pass recoverable=False explicitly.
+    """
+
+    def __init__(self, message: str, *, recoverable: bool = True, user_action: str = ""):
+        super().__init__(
+            message, service="voice", recoverable=recoverable, user_action=user_action
+        )

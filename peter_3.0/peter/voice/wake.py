@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from peter.core.config import get_config
+from peter.core.errors import VoiceError
 
 log = logging.getLogger(__name__)
 
@@ -47,20 +48,35 @@ class WakeWordDetector:
         from openwakeword.model import Model
 
         if self.model_name in BUILTIN_MODELS:
-            self._ensure_builtin_models()
+            try:
+                self._ensure_builtin_models()
+            except Exception as exc:
+                raise VoiceError(
+                    f"could not download the built-in wake word models: {exc}",
+                    recoverable=False,
+                    user_action="Check your network connection and try again.",
+                ) from exc
             spec = [self.model_name]
         else:
             path = Path(self.model_name)
             if not path.is_file():
-                raise FileNotFoundError(
+                raise VoiceError(
                     f"Wake word model {self.model_name!r} is neither a built-in "
-                    f"({', '.join(BUILTIN_MODELS)}) nor a path to an .onnx file. "
-                    "Set voice.wake.model in config.yml."
+                    f"({', '.join(BUILTIN_MODELS)}) nor a path to an .onnx file.",
+                    recoverable=False,
+                    user_action="Set voice.wake.model in config.yml.",
                 )
             spec = [str(path)]
 
         log.info("wake word: %s (threshold %.2f)", self.model_name, self.threshold)
-        return Model(wakeword_models=spec, inference_framework="onnx")
+        try:
+            return Model(wakeword_models=spec, inference_framework="onnx")
+        except Exception as exc:
+            raise VoiceError(
+                f"wake word model {self.model_name!r} failed to load: {exc}",
+                recoverable=False,
+                user_action="Check voice.wake.model in config.yml.",
+            ) from exc
 
     @staticmethod
     def _ensure_builtin_models() -> None:
