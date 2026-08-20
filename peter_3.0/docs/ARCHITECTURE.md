@@ -202,7 +202,7 @@ Being explicit about the boundary matters as much as the feature list:
 
 - **No autonomous purchase completion.** Peter can fill a cart and reach the payment screen; RBI's mandatory two-factor authentication rules (from 1 April 2026) mean the OTP/UPI PIN step is legally yours, not automatable, so the code has no path that attempts it.
 - **No cart-building hand-off** (was Phase 5, now deliberately dropped). Peter can walk a checkout to the payment screen, but since it can never legally complete one, the remaining value is a cart built by scraping flows that break constantly and put the account at risk. Not worth it.
-- **No send-SMS tool.** The phone bridge (§2.15) reads messages; it does not send. Sending as you needs default-SMS-app privileges or `service call isms` incantations that differ per Android version, and is a bad idea for something driven by speech recognition.
+- **No send-SMS tool**, even though §2.15 can now place and answer calls. Sending as you needs default-SMS-app privileges or `service call isms` incantations that differ per Android version, and is a bad idea for something driven by speech recognition; calling is a single well-documented public intent (`ACTION_CALL`) with no equivalent minefield.
 - **No git write tools.** §2.13 reads repositories — status, commits, PRs, CI. There is no commit, push, merge or checkout tool: an assistant that rewrites your working tree on a misheard sentence is a liability, and the upside is saving you from typing `git commit`.
 - **No automatic recording.** §2.12 records when asked. `auto_record_meetings` exists, defaults to off, and stays off unless deliberately enabled — recording a conversation is not a default anyone should inherit silently.
 
@@ -531,7 +531,7 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **114 tools currently registered**, split by permission tier:
+- **122 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
@@ -552,13 +552,19 @@ flowchart LR
 | `recorder_tools.py` | 4 | 3 | record, transcribe, summarise, read back |
 | `dev_tools.py` | 7 | 0 | git, PRs, CI, work log, standup |
 | `telegram_tools.py` | 1 | 1 | send to your phone, bridge status |
-| `phone_tools.py` | 5 | 2 | SMS, one-time code, call log, phone screen, phone status / open a link on the phone, save a phone screenshot |
-| **Total** | **60** | **54** | |
+| `phone_tools.py` | 5 | 10 | SMS, one-time code, call log, phone screen, phone status / open a link, save a screenshot, make/answer/end a call, Spotify play/pause/skip, set/dismiss a phone alarm |
+| **Total** | **60** | **62** | |
 
-  Six of the write-tier tools are pulled back to *confirm* by standing rules in
-  `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
-  `run_powershell`, `lock_workstation`, `send_email`. Those destroy data, run
-  arbitrary commands, or send something that cannot be unsent.
+  Seven of the write-tier tools are pulled back to *confirm* by standing rules
+  in `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
+  `run_powershell`, `lock_workstation`, `send_email`, `make_phone_call`. Those
+  destroy data, run arbitrary commands, send something that cannot be unsent,
+  or — the newest addition — connect a real phone call with no on-device
+  confirmation screen of its own to catch a misheard number. Everything else
+  new in §2.15 (answering, hanging up, media control, alarms) stays plain
+  `write`: either time-sensitive enough that a confirm prompt would defeat the
+  point (an unanswered call goes to voicemail while you're confirming), or
+  trivially reversible.
 
   **Tool groups whose credentials are missing are not registered at all**
   (`_REQUIRES` in the registry). Every schema is re-sent on every API call, so
@@ -1228,16 +1234,16 @@ Windows has no API into your handset's messages; Phone Link is closed. The two
 routes that work are a companion app you write, or ADB, which most developer
 machines already have.
 
-Seven tools, five `read` and two `write`. Reading is unrestricted: SMS
-(`read_sms`, `latest_code`), the call log (`read_call_log`), and — once a
-phone was actually connected and it became worth asking "what else can this
-do" — the screen itself (`read_phone_screen`, a screenshot piped straight
-into the same vision pipeline §2.4 already built for the desktop screen, good
-for reading a QR code or checking what an app is showing). Acting stays
-deliberately narrow, on purpose: `open_link_on_phone` can only open a web
-page, never send a message or place a call, and `save_phone_screenshot` can
-only copy a file that already exists on the phone. There is still no path
-from Peter to sending a text or making a call as you.
+Fifteen tools, five `read` and ten `write`, grown in two passes: read-only
+first (SMS, the call log, the screen), then real device control once a phone
+was actually connected and staying read-only stopped being the obvious
+default. Reading is unrestricted: SMS (`read_sms`, `latest_code`), the call
+log (`read_call_log`), and the screen itself (`read_phone_screen`, a
+screenshot piped straight into the same vision pipeline §2.4 already built
+for the desktop screen, good for reading a QR code or checking what an app is
+showing). Acting spans a wider range now than "narrow, on purpose" alone
+describes — see below — but the one line that still holds: **there is no
+path from Peter to sending a text as you.**
 
 Two parsing details carry all the risk. `adb shell` hands its argument to the
 *phone's* shell, which re-splits it — so the device-side command is built as one
@@ -1266,6 +1272,53 @@ shared `_run()` helper: `_run` runs adb in text mode, which on Windows
 rewrites line endings and would corrupt a binary PNG capture. It shells out
 separately with `exec-out screencap -p`, in binary mode, and does its own
 error handling instead.
+
+**Calls, media, and alarms — real device control, not just reading.**
+`make_phone_call` / `answer_phone_call` / `hang_up_phone_call` go through the
+standard `ACTION_CALL` intent and the `KEYCODE_CALL`/`KEYCODE_ENDCALL` key
+events — the same key press ends an active call or rejects a ringing one,
+matching a physical end-call button. `play_music_on_phone` /
+`pause_music_on_phone` / `skip_track_on_phone` launch Spotify by package name
+(`monkey -p ... -c LAUNCHER`, deliberately not a hardcoded activity class,
+which is exactly the kind of internal detail that breaks across app updates)
+and otherwise send system-level media keys (`KEYCODE_MEDIA_PLAY/PAUSE/NEXT`)
+— these are not Spotify-specific once something is already playing; they
+control whatever app currently holds the phone's active media session, the
+same as a headset button would. `set_phone_alarm` / `stop_phone_alarm` go
+through `android.intent.action.SET_ALARM` / `DISMISS_ALARM`, the public
+`android.provider.AlarmClock` intents meant for exactly this, so they work
+with whatever the phone's default clock app is rather than one OEM's
+internals — support for `DISMISS_ALARM` specifically varies by clock app, and
+when nothing handles it `am start` fails the ordinary way rather than
+Peter pretending it worked. A phone-side "reminder" is implemented as a
+labelled alarm, since Android has no separate public reminder intent.
+
+Only `make_phone_call` is pulled back to `confirm` by a standing rule (see the
+tool-count table above) — it connects immediately with no on-device
+confirmation screen of its own, unlike answering or hanging up, which are
+either time-sensitive enough that a confirm prompt would defeat the point (an
+unanswered call goes to voicemail while you're confirming) or trivially
+reversible.
+
+**Every one of these embeds free text into a single command string handed to
+the phone's own shell — which makes each of them a command-injection surface,
+closed off in one shared place rather than per-call.** A phone number, a
+Spotify search query, an alarm label, a URL: all are values Peter's own model
+chose based on what the user said (or, worse, on page text the model read),
+and all end up inside a shell string re-parsed on the device the way §2.15's
+opening paragraph already describes for `content query`. The first version of
+`open_link_on_phone` (§2.15, earlier revision) escaped embedded double quotes
+by hand and wrapped the URL in double quotes — which does not actually stop a
+POSIX shell from expanding `$(...)`, a backtick, or `$VAR` *inside* those
+double quotes, so a crafted URL like `https://x/$(reboot)` would have executed
+on the phone the moment `open_link_on_phone` opened it. Fixed by routing every
+free-text value through `_quote()` (a thin wrapper on `shlex.quote`), which
+single-quotes instead — single quotes disable all expansion in a POSIX shell,
+which is what actually makes embedding arbitrary text safe. `call_number`
+additionally validates the number against an allow-list of characters a
+phone number can actually contain, before it ever reaches a shell string, as
+a second, independent layer — defence in depth rather than trusting one
+mechanism to hold.
 
 **`adb_path` is resolved against the project root, not left to depend on the
 process's working directory — a real bug, found by actually running it.**

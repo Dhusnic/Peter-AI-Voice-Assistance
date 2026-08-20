@@ -5,6 +5,7 @@ with no escaping: a message body can contain the same ", " that separates
 fields. These tests use real-shaped rows, including the awkward ones.
 """
 
+import shlex
 import subprocess
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -19,6 +20,8 @@ def phone_config(**kwargs):
     base = dict(
         enabled=True, adb_path="adb", device_serial="", sms_limit=10,
         otp_window_minutes=10, timeout_seconds=5.0,
+        pull_dirs=["/sdcard/Pictures/Screenshots", "/sdcard/DCIM/Screenshots"],
+        spotify_package="com.spotify.music",
     )
     base.update(kwargs)
     return SimpleNamespace(**base)
@@ -532,18 +535,28 @@ def test_open_url_sends_a_view_intent(monkeypatch):
     assert "https://example.com/checkout?x=1" in command
 
 
-def test_open_url_escapes_embedded_quotes(monkeypatch):
+def test_open_url_survives_shell_metacharacters(monkeypatch):
+    """A URL containing `$(...)` or a backtick must not let the phone's shell
+    execute anything. This is the actual fix for a real bug: the original
+    implementation escaped embedded double quotes but still wrapped the URL
+    in a double-quoted string, which does not stop a POSIX shell from
+    expanding `$(...)` or backticks inside it — a crafted URL could run
+    arbitrary commands on the phone."""
     calls = fake_adb(monkeypatch, "")
-    adb.open_url(phone_config(), 'https://example.com/"x')
-    assert '\\"' in calls[0][-1]
+    url = 'https://example.com/"x$(reboot)`id`'
+
+    adb.open_url(phone_config(), url)
+
+    command = calls[0][-1]
+    assert shlex.split(command)[-1] == url
 
 
 # -------------------------------------------------------- pulling a file
 def test_pull_latest_file_skips_an_empty_directory(monkeypatch, tmp_path):
     def run(args, **k):
-        if args[-2:] == ["shell", 'ls -t "/sdcard/empty" 2>/dev/null']:
+        if args[-2:] == ["shell", "ls -t /sdcard/empty 2>/dev/null"]:
             return SimpleNamespace(returncode=1, stdout="", stderr="No such file")
-        if args[-2:] == ["shell", 'ls -t "/sdcard/real" 2>/dev/null']:
+        if args[-2:] == ["shell", "ls -t /sdcard/real 2>/dev/null"]:
             return SimpleNamespace(returncode=0, stdout="shot.png\nolder.png\n", stderr="")
         if len(args) >= 2 and args[1] == "pull":
             return SimpleNamespace(returncode=0, stdout="1 file pulled", stderr="")
@@ -574,7 +587,252 @@ def test_pull_latest_file_says_adb_is_missing(monkeypatch, tmp_path):
     assert "Platform Tools" in caught.value.user_action
 
 
+# --------------------------------------------------------- placing calls
+def test_call_number_rejects_anything_that_is_not_a_phone_number(monkeypatch):
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+    with pytest.raises(IntegrationError):
+        adb.call_number(phone_config(), "9000; reboot")
+
+
+def test_call_number_dials_via_the_call_intent(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.call_number(phone_config(), "+91 90000 00000")
+
+    command = calls[0][-1]
+    assert "android.intent.action.CALL" in command
+    assert shlex.split(command)[-1] == "tel:+91 90000 00000"
+
+
+def test_call_number_strips_surrounding_whitespace(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.call_number(phone_config(), "  9000000000  ")
+    assert shlex.split(calls[0][-1])[-1] == "tel:9000000000"
+
+
+def test_answer_call_sends_the_call_keyevent(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.answer_call(phone_config())
+    assert calls[0][-1] == "input keyevent KEYCODE_CALL"
+
+
+def test_hang_up_call_sends_the_endcall_keyevent(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.hang_up_call(phone_config())
+    assert calls[0][-1] == "input keyevent KEYCODE_ENDCALL"
+
+
+# ------------------------------------------------------------------- media
+def test_launch_spotify_with_no_query_opens_the_app_and_plays(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.launch_spotify(phone_config())
+
+    assert "monkey -p com.spotify.music" in calls[0][-1]
+    assert calls[1][-1] == "input keyevent KEYCODE_MEDIA_PLAY"
+
+
+def test_launch_spotify_with_a_query_opens_a_search(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.launch_spotify(phone_config(), query="lofi beats")
+
+    command = calls[0][-1]
+    assert "android.intent.action.VIEW" in command
+    assert "spotify:search:lofi%20beats" in command
+    assert len(calls) == 1  # no extra media-play key when opening a search
+
+
+def test_pause_media_sends_the_pause_keyevent(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.pause_media(phone_config())
+    assert calls[0][-1] == "input keyevent KEYCODE_MEDIA_PAUSE"
+
+
+def test_next_track_sends_the_media_next_keyevent(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.next_track(phone_config())
+    assert calls[0][-1] == "input keyevent KEYCODE_MEDIA_NEXT"
+
+
+# ------------------------------------------------------------------ alarms
+def test_set_alarm_on_phone_sends_hour_and_minute(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.set_alarm_on_phone(phone_config(), 7, 30)
+
+    command = calls[0][-1]
+    assert "android.intent.action.SET_ALARM" in command
+    assert "--ei android.intent.extra.alarm.HOUR 7" in command
+    assert "--ei android.intent.extra.alarm.MINUTES 30" in command
+    assert "SKIP_UI true" in command
+
+
+def test_set_alarm_on_phone_rejects_an_out_of_range_time(monkeypatch):
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+    with pytest.raises(IntegrationError):
+        adb.set_alarm_on_phone(phone_config(), 24, 0)
+    with pytest.raises(IntegrationError):
+        adb.set_alarm_on_phone(phone_config(), 7, 60)
+
+
+def test_set_alarm_on_phone_includes_a_label_when_given(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.set_alarm_on_phone(phone_config(), 6, 0, label="leave for the station")
+
+    command = calls[0][-1]
+    assert "android.intent.extra.alarm.MESSAGE" in command
+    assert "leave for the station" in command
+
+
+def test_set_alarm_on_phone_omits_message_extra_with_no_label(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.set_alarm_on_phone(phone_config(), 6, 0)
+    assert "alarm.MESSAGE" not in calls[0][-1]
+
+
+def test_set_alarm_on_phone_translates_iso_weekdays_to_android(monkeypatch):
+    """ISO Monday=1 must become Calendar.DAY_OF_WEEK's Monday=2 — Sunday=1
+    there is the classic off-by-one this mapping exists to avoid."""
+    calls = fake_adb(monkeypatch, "")
+    adb.set_alarm_on_phone(phone_config(), 6, 0, days="1,7")  # Mon, Sun
+
+    command = calls[0][-1]
+    assert "--eia android.intent.extra.alarm.DAYS 2,1" in command
+
+
+def test_set_alarm_on_phone_omits_days_extra_for_a_one_off(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.set_alarm_on_phone(phone_config(), 6, 0)
+    assert "alarm.DAYS" not in calls[0][-1]
+
+
+def test_dismiss_phone_alarm_sends_the_dismiss_intent(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.dismiss_phone_alarm(phone_config())
+    assert "android.intent.action.DISMISS_ALARM" in calls[0][-1]
+
+
+def test_dismiss_phone_alarm_raises_when_no_clock_app_handles_it(monkeypatch):
+    fake_adb(monkeypatch, output="Error: Activity not started, unable to "
+                                 "resolve Intent", returncode=1)
+    with pytest.raises(IntegrationError):
+        adb.dismiss_phone_alarm(phone_config())
+
+
 # ------------------------------------------------------------------ tools
+def test_make_phone_call_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "call_number", lambda cfg, number: None)
+
+    result = registry.get_record("make_phone_call").raw_fn(number="9000000000")
+
+    assert "9000000000" in result
+
+
+def test_make_phone_call_tool_reports_a_bad_number_speakably(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    def boom(cfg, number):
+        raise IntegrationError(f"{number!r} does not look like a phone number",
+                               service="phone")
+
+    monkeypatch.setattr(adb, "call_number", boom)
+
+    result = registry.get_record("make_phone_call").raw_fn(number="not a number")
+
+    assert "Something went wrong" in result
+
+
+def test_answer_phone_call_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "answer_call", lambda cfg: None)
+
+    assert "Answered" in registry.get_record("answer_phone_call").raw_fn()
+
+
+def test_hang_up_phone_call_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "hang_up_call", lambda cfg: None)
+
+    assert "ended" in registry.get_record("hang_up_phone_call").raw_fn().lower()
+
+
+def test_play_music_on_phone_tool_names_the_query(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "launch_spotify", lambda cfg, query: None)
+
+    result = registry.get_record("play_music_on_phone").raw_fn(query="lofi beats")
+
+    assert "lofi beats" in result
+
+
+def test_pause_music_on_phone_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "pause_media", lambda cfg: None)
+
+    assert "Paused" in registry.get_record("pause_music_on_phone").raw_fn()
+
+
+def test_skip_track_on_phone_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "next_track", lambda cfg: None)
+
+    assert "Skipped" in registry.get_record("skip_track_on_phone").raw_fn()
+
+
+def test_set_phone_alarm_tool_reports_the_time_and_label(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(
+        adb, "set_alarm_on_phone", lambda cfg, hour, minute, label, days: None
+    )
+
+    result = registry.get_record("set_phone_alarm").raw_fn(
+        hour=6, minute=30, label="leave for the station"
+    )
+
+    assert "06:30" in result
+    assert "leave for the station" in result
+
+
+def test_stop_phone_alarm_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "dismiss_phone_alarm", lambda cfg: None)
+
+    assert "dismissed" in registry.get_record("stop_phone_alarm").raw_fn().lower()
+
+
 def test_read_call_log_tool_reports_calls(container, monkeypatch):
     from peter.agent import registry
 

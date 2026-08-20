@@ -577,6 +577,9 @@ class PhoneConfig(BaseModel):
             "/sdcard/DCIM/Screenshots",
         ]
     )
+    # Package name Spotify controls (play_music_on_phone) launch by. Only
+    # matters if you side-load a differently-packaged build.
+    spotify_package: str = "com.spotify.music"
 
 
 class DocsConfig(BaseModel):

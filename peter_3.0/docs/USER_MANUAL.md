@@ -28,7 +28,7 @@ to do when something is not working. For *how it is built*, see
    - [4.12 Your documents](#412-your-documents)
    - [4.13 Workspaces](#413-workspaces)
    - [4.14 Your phone — Telegram](#414-your-phone--telegram)
-   - [4.15 Your phone — SMS over ADB](#415-your-phone--sms-over-adb)
+   - [4.15 Your phone — calls, music, alarms and SMS (ADB)](#415-your-phone--sms-over-adb)
    - [4.16 Cost and models](#416-cost-and-models)
 5. [What Peter does without being asked](#5-what-peter-does-without-being-asked)
 6. [Permissions — what stops and asks](#6-permissions)
@@ -444,25 +444,62 @@ You can also send things deliberately: *"send that address to my phone"*.
   desk.
 
 <a name="415-your-phone--sms-over-adb"></a>
-### 4.15 Your phone — SMS over ADB
+### 4.15 Your phone — calls, music, alarms and SMS (ADB)
 
 *Off by default. [Setup](#75-phone-sms-over-adb).*
 
 > "read my messages"
 > **"what's the code?"**
 > "is my phone charging?"
+> "who called me in the last hour?"
+> "what's on my phone screen right now?"
+> "call Amma"
+> "answer it" / "hang up"
+> "play some lofi on Spotify" / "pause the music" / "next song"
+> "set an alarm for 6:30 tomorrow, leave for the station" / "stop the alarm"
+> "open this checkout page on my phone"
 
-The one that earns its keep is `what's the code?`. Peter can walk a checkout
-right up to the payment screen but cannot legally complete it — the OTP is
-yours to enter. Reading it aloud so you can type it is exactly as far as
-automation should reach into that.
+**Reading** is unrestricted: messages, the call log (with names resolved
+against your contacts where they match), and now the screen itself — Peter
+can take a screenshot of the phone and describe it, or answer a specific
+question about it, the same way it can look at your desktop.
 
-Peter reads the code **digit by digit** ("1 2 3 4 5 6"), because a speech engine
-given "123456" says "one hundred and twenty-three thousand…".
+**Acting** covers real device control now, not just SMS reading:
 
-Read-only. There is no send-SMS tool: sending a message as you is both
-technically unreliable across Android versions and a bad idea for something
-driven by speech recognition.
+- **Calls.** *"call Amma"* connects immediately — this one is held back by a
+  confirmation step (see [§6](#6-permissions)) since a misheard number
+  actually dials. *"answer it"* and *"hang up"* run straight away, since a
+  confirmation step would be pointless — an unanswered call goes to voicemail
+  while you're confirming.
+- **Music.** *"play [something] on Spotify"* opens Spotify and, with a
+  request, searches it; *"pause"* / *"next song"* send the phone's ordinary
+  media keys, so they control whatever app is actually playing, Spotify or
+  otherwise.
+- **Alarms.** *"set an alarm for 6:30, leave for the station"* uses the
+  phone's own clock app through Android's standard alarm intent — this is
+  also how to set a phone-side reminder, since a reminder is just a labelled
+  alarm. *"stop the alarm"* dismisses whatever is currently ringing, when the
+  phone's clock app supports it (most do; a few heavily customised ones
+  don't, and Peter will say so rather than pretend it worked).
+- **Checkout hand-off.** *"open this on my phone"* puts a web page — a
+  checkout, a login — directly on the phone's screen, so the OTP/UPI step
+  that's legally yours to do stays one tap away instead of "go find your
+  phone and type this URL in."
+- **Saving a file.** *"grab that screenshot off my phone"* copies the newest
+  screenshot from the phone onto this computer.
+
+The one that's been here the longest and still earns its keep: `what's the
+code?`. Peter can walk a checkout right up to the payment screen but cannot
+legally complete it — the OTP is yours to enter. Reading it aloud so you can
+type it is exactly as far as automation should reach into that. Peter reads
+the code **digit by digit** ("1 2 3 4 5 6"), because a speech engine given
+"123456" says "one hundred and twenty-three thousand…".
+
+**Still no send-SMS tool.** Everything above adds real actions, but sending a
+text as you stays out of scope: it needs default-SMS-app privileges or
+version-specific `service call isms` incantations, and remains a bad idea for
+something driven by speech recognition. Calling is different — it's one
+well-documented public Android intent with no equivalent minefield.
 
 <a name="416-cost-and-models"></a>
 ### 4.16 Cost and models
@@ -547,15 +584,17 @@ Every tool call passes through a gate before it runs. Tools carry a tier:
 playing a video, creating a calendar event, saving a memory — are cheap and
 reversible, and a `y/N` prompt on every one is just friction.
 
-**These six always ask**, and are listed explicitly in `config.yml`:
+**These seven always ask**, and are listed explicitly in `config.yml`:
 
 ```
 delete_file · delete_email · delete_calendar_event
-run_powershell · lock_workstation · send_email
+run_powershell · lock_workstation · send_email · make_phone_call
 ```
 
-Destroy data, run arbitrary commands, or send something to another person that
-cannot be unsent. Change that list if you want, understanding the cost.
+Destroy data, run arbitrary commands, send something to another person that
+cannot be unsent, or — `make_phone_call` — connect a real call with no
+on-device confirmation screen of its own. Change that list if you want,
+understanding the cost.
 
 A refusal is not an error. Peter is told "the user declined", and adapts —
 apologises, offers an alternative, asks what you would prefer.
@@ -644,9 +683,10 @@ For pull requests and CI, install the **GitHub CLI** from cli.github.com and run
 credentials in the OS keychain.
 
 <a name="75-phone-sms-over-adb"></a>
-### 7.5 Phone (SMS over ADB) — 5 minutes
+### 7.5 Phone (calls, music, alarms, SMS over ADB) — 5 minutes
 
-1. Install **Android Platform Tools**, put `adb` on PATH.
+1. Install **Android Platform Tools**, put `adb` on PATH (or unzip it
+   straight into the repo and point `adb_path` at it — see below).
 2. On the phone: Settings → About → tap Build number 7 times → Developer
    options → **USB debugging** on.
 3. Plug in over USB and accept the "Allow USB debugging" prompt on the handset.
@@ -657,6 +697,22 @@ credentials in the OS keychain.
        enabled: true
    ```
 5. Check with `--health`, which reports `phone  ok - 1 device(s)`.
+
+Everything under this one switch — reading messages, calls, music control,
+alarms — needs nothing beyond the above. No extra permission, no app to
+install on the phone. Two things worth knowing:
+
+- **Music control assumes Spotify is installed** (`integrations.phone.spotify_package`,
+  default `com.spotify.music`) — `pause`/`next` work with whatever app is
+  actually playing, but `play` specifically launches Spotify.
+- **`adb` unzipped straight into the repo instead of PATH** is supported —
+  point `adb_path` at it and it resolves against the project root regardless
+  of where Peter is launched from, e.g.:
+  ```yaml
+  integrations:
+    phone:
+      adb_path: "./mobile dev/platform-tools/adb.exe"
+  ```
 
 <a name="76-documents"></a>
 ### 7.6 Documents — 1 minute
@@ -711,7 +767,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 <a name="9-complete-tool-reference"></a>
 ## 9. Complete tool reference
 
-110 tools. `[r]` read, `[w]` write, `[!]` always confirms.
+122 tools. `[r]` read, `[w]` write, `[!]` always confirms.
 
 **System** — `open_app` [w] · `list_files` [r] · `read_file` [r] ·
 `search_files` [r] · `write_file` [w] · `delete_file` [!] · `move_file` [w] ·
@@ -766,7 +822,11 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 
 **Telegram** — `send_to_phone` [w] · `telegram_status` [r]
 
-**Phone** — `read_sms` [r] · `latest_code` [r] · `phone_status` [r]
+**Phone** — `read_sms` [r] · `latest_code` [r] · `phone_status` [r] ·
+`read_call_log` [r] · `read_phone_screen` [r] · `make_phone_call` [!] ·
+`answer_phone_call` [w] · `hang_up_phone_call` [w] · `play_music_on_phone` [w] ·
+`pause_music_on_phone` [w] · `skip_track_on_phone` [w] · `set_phone_alarm` [w] ·
+`stop_phone_alarm` [w] · `open_link_on_phone` [w] · `save_phone_screenshot` [w]
 
 **Desktop** — `open_url` [w] · `open_website` [w] · `open_named_site` [w] ·
 `play_youtube` [w] · `control_playback` [w] · `search_bookmarks` [r] ·
@@ -829,6 +889,21 @@ Run `gh auth login`. Peter does not manage GitHub credentials.
 "attached but not ready" (which means you have not accepted the USB debugging
 prompt on the handset).
 
+**"stop the alarm" says it failed**
+Support for `DISMISS_ALARM` depends on the phone's default clock app; Google
+Clock and most AOSP-based ones honour it, some heavily customised OEM clocks
+don't. There's no way to detect which case you're in short of trying it.
+
+**Music control does nothing**
+`play_music_on_phone` launches Spotify specifically — if it's not installed,
+this fails outright. `pause`/`next` are generic media keys and only do
+anything if some app on the phone is actually playing audio.
+
+**"call [name]" is asking for confirmation**
+That's deliberate — `make_phone_call` is the one phone tool held back to
+`confirm` in `config.yml`'s `policy.standing_rules`, since it connects
+immediately with no on-device screen of its own. See [§6](#6-permissions).
+
 **Costs look higher than expected**
 Ask for `spend_report`, which breaks down by model. If `cache_read` is 0 across
 turns in `llm_status`, prompt caching is not working and something volatile got
@@ -860,7 +935,13 @@ What is sent to your LLM provider:
 - What you say, plus injected memory context and the current time.
 - Tool results — page text, email subject lines, document passages, commit
   subjects, meeting transcripts (as text, for summarising).
-- Screenshots, when you ask Peter to look at something.
+- Screenshots, when you ask Peter to look at something — the desktop or the
+  phone's screen, over the same vision pipeline either way.
+
+Phone commands (calls, media, alarms, SMS/call-log reads) travel over the
+USB/ADB connection between this machine and the handset only — nothing about
+*how* they're sent goes near your LLM provider, only the text of what you
+asked for and Peter's reply.
 
 What is sent to Telegram, if you enable it: your messages to Peter, Peter's
 replies, and mirrored proactive announcements.

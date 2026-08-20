@@ -229,6 +229,9 @@ policy:
     run_powershell: confirm
     lock_workstation: confirm
     send_email: confirm
+    # Connects immediately, no on-device confirmation screen — unlike every
+    # other phone tool, which either only reads or is trivially reversible.
+    make_phone_call: confirm
 
 integrations:
   # Controlling software already installed on this machine: your own browser,
@@ -518,6 +521,7 @@ integrations:
     pull_dirs:
       - "/sdcard/Pictures/Screenshots"
       - "/sdcard/DCIM/Screenshots"
+    spotify_package: "com.spotify.music"
 
   # ------------------------------------------------------------------- docs
   # Full-text search over folders you point Peter at, and answers built from

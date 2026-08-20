@@ -27,8 +27,10 @@ from __future__ import annotations
 import logging
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -49,6 +51,17 @@ _CALL_TYPES = {
     "1": "incoming", "2": "outgoing", "3": "missed",
     "4": "voicemail", "5": "rejected", "6": "blocked",
 }
+
+# Only characters a real phone number can contain. Rejecting anything else
+# outright, before it ever reaches a shell string, is the first of two
+# defences against injection through `call_number` — see `_quote` below for
+# the second, which every other free-text value embedded in a device-shell
+# command goes through.
+_PHONE_NUMBER = re.compile(r"^[0-9+#*() .-]{2,20}$")
+
+# ISO 8601 weekday (Monday=1..Sunday=7) -> Calendar.DAY_OF_WEEK
+# (Sunday=1..Saturday=7), which is what AlarmClock.EXTRA_DAYS expects.
+_ISO_TO_ANDROID_WEEKDAY = {"1": "2", "2": "3", "3": "4", "4": "5", "5": "6", "6": "7", "7": "1"}
 
 # Contact names for a device rarely change within one Peter session, and a
 # lookup costs a real ADB round trip — cached per (adb path, serial), not
@@ -113,6 +126,24 @@ def _null(value: str | None) -> str | None:
         return None
     value = value.strip()
     return None if value in ("", "NULL") else value
+
+
+def _quote(value: str) -> str:
+    """POSIX-shell-safe quoting for free text embedded in a device-shell
+    command string.
+
+    Every function here that builds a command ultimately hands `adb` one
+    joined string, which the *phone's* shell re-parses (see the module
+    docstring) — so any free text folded into that string is a command
+    injection point unless it is quoted correctly. Single-quoting (what this
+    does) is the only form that is actually safe: double quotes still let a
+    POSIX shell expand `$(...)`, backticks and `$VAR`, so naive
+    double-quote-escaping — what this module's URL handling did at first —
+    still lets a crafted value like `https://x/$(reboot)` execute on the
+    phone. `shlex.quote` produces a single-quoted, embedded-quote-escaped
+    string that survives that shell's parsing inertly.
+    """
+    return shlex.quote(value)
 
 
 def _normalize_number(number: str | None) -> str:
@@ -375,9 +406,118 @@ def open_url(cfg, url: str) -> None:
             f"refusing to open a non-http(s) link on the phone: {url!r}",
             service="phone",
         )
-    escaped = url.replace('"', '\\"')
-    command = f'am start -a android.intent.action.VIEW -d "{escaped}"'
+    command = f"am start -a android.intent.action.VIEW -d {_quote(url)}"
     _run(["shell", command], cfg)
+
+
+def call_number(cfg, number: str) -> None:
+    """Place a call. Connects immediately (`ACTION_CALL`), with no on-device
+    confirmation step — unlike `ACTION_DIAL`, which only opens the dialer.
+    That is why the number is validated as looking like a phone number before
+    it ever reaches a shell string, on top of the usual quoting."""
+    number = number.strip()
+    if not _PHONE_NUMBER.match(number):
+        raise IntegrationError(
+            f"{number!r} does not look like a phone number", service="phone",
+        )
+    command = f"am start -a android.intent.action.CALL -d {_quote(f'tel:{number}')}"
+    _run(["shell", command], cfg)
+
+
+def answer_call(cfg) -> None:
+    """Answer an incoming, currently ringing call."""
+    _run(["shell", "input keyevent KEYCODE_CALL"], cfg)
+
+
+def hang_up_call(cfg) -> None:
+    """End an active call, or reject one that is currently ringing — the same
+    key press does both, matching a physical end-call button."""
+    _run(["shell", "input keyevent KEYCODE_ENDCALL"], cfg)
+
+
+def launch_spotify(cfg, query: str = "") -> None:
+    """Open Spotify, optionally straight to a search.
+
+    A query goes through Spotify's own `spotify:search:<text>` URI, which
+    Spotify registers as a VIEW target. With no query, this launches the app
+    by package name via `monkey -p ... -c LAUNCHER` — deliberately not a
+    hardcoded activity class name (`am start -n com.spotify.music/.Something`),
+    which is exactly the kind of internal detail that breaks across app
+    updates — then sends a media-play key so playback resumes if Spotify was
+    already open and paused.
+    """
+    package = _quote((cfg.spotify_package or "com.spotify.music").strip())
+    query = query.strip()
+    if query:
+        uri = f"spotify:search:{urllib.parse.quote(query)}"
+        command = f"am start -a android.intent.action.VIEW -d {_quote(uri)}"
+        _run(["shell", command], cfg)
+    else:
+        _run(["shell", f"monkey -p {package} -c android.intent.category.LAUNCHER 1"], cfg)
+        _run(["shell", "input keyevent KEYCODE_MEDIA_PLAY"], cfg)
+
+
+def pause_media(cfg) -> None:
+    """Pause whatever is playing through the phone's currently active media
+    session. A system-level media key, not Spotify-specific — it pauses
+    Spotify if Spotify is what is playing, the same way a headset button
+    would."""
+    _run(["shell", "input keyevent KEYCODE_MEDIA_PAUSE"], cfg)
+
+
+def next_track(cfg) -> None:
+    """Skip to the next track in the active media session."""
+    _run(["shell", "input keyevent KEYCODE_MEDIA_NEXT"], cfg)
+
+
+def _android_weekdays(days: str) -> list[str]:
+    result = []
+    for token in days.split(","):
+        token = token.strip()
+        if token in _ISO_TO_ANDROID_WEEKDAY:
+            result.append(_ISO_TO_ANDROID_WEEKDAY[token])
+    return result
+
+
+def set_alarm_on_phone(cfg, hour: int, minute: int, label: str = "", days: str = "") -> None:
+    """Set an alarm through the standard `android.intent.action.SET_ALARM`
+    intent (part of the public `android.provider.AlarmClock` API), so this
+    works with whatever the phone's default clock app is instead of
+    depending on one OEM's internals. Also how a phone-side "reminder" is
+    implemented — Android has no separate public intent for that, so a
+    reminder is just an alarm with a label.
+
+    Args:
+        days: Comma-separated ISO weekdays to repeat on (Monday=1..Sunday=7).
+            Empty is a one-off alarm.
+    """
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise IntegrationError("hour must be 0-23 and minute 0-59", service="phone")
+
+    parts = [
+        "am start -a android.intent.action.SET_ALARM",
+        f"--ei android.intent.extra.alarm.HOUR {hour}",
+        f"--ei android.intent.extra.alarm.MINUTES {minute}",
+        "--ez android.intent.extra.alarm.SKIP_UI true",
+    ]
+    if label.strip():
+        parts.append(f"--es android.intent.extra.alarm.MESSAGE {_quote(label.strip())}")
+    android_days = _android_weekdays(days) if days.strip() else []
+    if android_days:
+        parts.append(f"--eia android.intent.extra.alarm.DAYS {','.join(android_days)}")
+
+    _run(["shell", " ".join(parts)], cfg)
+
+
+def dismiss_phone_alarm(cfg) -> None:
+    """Dismiss the alarm currently ringing (or the next one due), through
+    `android.intent.action.DISMISS_ALARM` — the counterpart public intent to
+    `SET_ALARM`. Support varies by the phone's default clock app; Google
+    Clock and most AOSP-based ones honour it. If none of the phone's
+    installed apps handle the intent, `am start` fails the normal way and
+    `_run` surfaces it as an IntegrationError rather than pretending it
+    worked."""
+    _run(["shell", "am start -a android.intent.action.DISMISS_ALARM"], cfg)
 
 
 def _list_remote(cfg, remote_dir: str) -> list[str]:
@@ -386,7 +526,7 @@ def _list_remote(cfg, remote_dir: str) -> list[str]:
     args = [_resolved_adb_path(cfg)]
     if cfg.device_serial:
         args += ["-s", cfg.device_serial]
-    args += ["shell", f'ls -t "{remote_dir}" 2>/dev/null']
+    args += ["shell", f"ls -t {_quote(remote_dir)} 2>/dev/null"]
     try:
         result = subprocess.run(
             args, capture_output=True, text=True, timeout=cfg.timeout_seconds,

@@ -5,11 +5,13 @@ default. Both facts are deliberate: this needs USB debugging on and the
 machine authorised on the handset, which is something you switch on
 knowingly.
 
-Reading (SMS, calls, the screen) is `read` tier. Acting is narrow and stays
-`write` tier: `open_link_on_phone` only ever opens a web page, and
-`save_phone_screenshot` only ever copies a file that already exists on the
-phone to this computer — nothing here can send a message or place a call as
-you.
+Reading (SMS, calls, the screen) is `read` tier. Everything else — calls,
+media, alarms — is `write` tier and auto-executes like any other write tool,
+with one deliberate exception: `make_phone_call` is pulled back to `confirm`
+in config.yml's standing_rules, because it connects immediately with no
+on-device confirmation of its own, unlike answering or hanging up, which are
+either time-sensitive (a confirm step would let the call go to voicemail
+first) or trivially reversible.
 
 The one that earns its keep the most: `latest_code`. Peter can walk a
 checkout right up to the payment screen but cannot legally complete it — RBI
@@ -173,3 +175,123 @@ def save_phone_screenshot() -> str:
     except PeterError as exc:
         return exc.spoken()
     return f"Saved {local_path.name} to the computer."
+
+
+@peter_tool(tier="write")
+def make_phone_call(number: str) -> str:
+    """Call a phone number from the phone. Connects immediately — a real
+    call, not a dial screen the user still has to tap to send.
+
+    Args:
+        number: The number to call, e.g. "+91 90000 00000". Digits and
+            ordinary phone-number punctuation only.
+    """
+    cfg = _cfg()
+    try:
+        adb.call_number(cfg, number)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Calling {number}."
+
+
+@peter_tool(tier="write")
+def answer_phone_call() -> str:
+    """Answer the phone's currently ringing incoming call."""
+    cfg = _cfg()
+    try:
+        adb.answer_call(cfg)
+    except PeterError as exc:
+        return exc.spoken()
+    return "Answered."
+
+
+@peter_tool(tier="write")
+def hang_up_phone_call() -> str:
+    """End the phone's active call, or reject one that is currently ringing."""
+    cfg = _cfg()
+    try:
+        adb.hang_up_call(cfg)
+    except PeterError as exc:
+        return exc.spoken()
+    return "Call ended."
+
+
+@peter_tool(tier="write")
+def play_music_on_phone(query: str = "") -> str:
+    """Play music on the phone through Spotify.
+
+    Args:
+        query: What to play, e.g. "lofi beats" or an artist name. Empty
+            resumes whatever Spotify last had queued.
+    """
+    cfg = _cfg()
+    try:
+        adb.launch_spotify(cfg, query)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Playing {query} on Spotify." if query.strip() else "Resumed Spotify."
+
+
+@peter_tool(tier="write")
+def pause_music_on_phone() -> str:
+    """Pause whatever is currently playing on the phone — Spotify, if that
+    is what is playing."""
+    cfg = _cfg()
+    try:
+        adb.pause_media(cfg)
+    except PeterError as exc:
+        return exc.spoken()
+    return "Paused."
+
+
+@peter_tool(tier="write")
+def skip_track_on_phone() -> str:
+    """Skip to the next track in whatever is currently playing on the phone."""
+    cfg = _cfg()
+    try:
+        adb.next_track(cfg)
+    except PeterError as exc:
+        return exc.spoken()
+    return "Skipped to the next track."
+
+
+@peter_tool(tier="write")
+def set_phone_alarm(hour: int, minute: int, label: str = "", days: str = "") -> str:
+    """Set an alarm on the phone's own clock app.
+
+    Also how to set a phone-side reminder: give it a label describing what
+    it is for — Android has no separate "reminder" concept, only a labelled
+    alarm.
+
+    Args:
+        hour: Hour on a 24-hour clock, 0-23.
+        minute: Minute, 0-59.
+        label: What the alarm is for, e.g. "leave for the station".
+        days: Days to repeat on, comma-separated ISO weekday numbers
+            (Monday=1 .. Sunday=7), e.g. "1,2,3,4,5" for weekdays. Empty is
+            a one-off alarm.
+    """
+    cfg = _cfg()
+    try:
+        adb.set_alarm_on_phone(cfg, hour, minute, label=label, days=days)
+    except PeterError as exc:
+        return exc.spoken()
+    when = f"{hour:02d}:{minute:02d}"
+    suffix = f" ({label.strip()})" if label.strip() else ""
+    return f"Alarm set for {when} on the phone.{suffix}"
+
+
+@peter_tool(tier="write")
+def stop_phone_alarm() -> str:
+    """Dismiss the phone's currently ringing alarm.
+
+    Works with the phone's default clock app; some heavily customised OEM
+    clock apps do not support this, in which case it fails honestly rather
+    than silently doing nothing.
+    """
+    cfg = _cfg()
+    try:
+        adb.dismiss_phone_alarm(cfg)
+    except PeterError as exc:
+        return exc.spoken()
+    return "Alarm dismissed."
