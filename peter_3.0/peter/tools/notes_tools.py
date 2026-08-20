@@ -9,8 +9,16 @@ should already know on every future turn.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
 from peter.notes import spoken
+
+register_skill(SkillManifest(
+    name="notes", version="1.0.0",
+    description="A personal journal — quick timestamped notes, searchable later.",
+    module=__name__, permissions=(),
+    tools=("add_note", "search_notes", "recent_notes", "delete_note"),
+))
 
 
 @peter_tool(tier="write")

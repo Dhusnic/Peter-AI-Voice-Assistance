@@ -10,7 +10,16 @@ that asks.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="memory", version="1.0.0",
+    description="Long-term memory: durable facts and standing preferences.",
+    module=__name__, permissions=(),
+    tools=("remember_fact", "recall", "forget_fact", "set_preference",
+           "list_preferences", "forget_preference"),
+))
 
 
 @peter_tool(tier="write")

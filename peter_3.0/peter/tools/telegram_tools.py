@@ -12,8 +12,16 @@ is a good idea coming out of a voice assistant.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.errors import IntegrationError
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="telegram", version="1.0.0",
+    description="Send something to your own phone via Telegram, deliberately.",
+    module=__name__, permissions=("network",),
+    tools=("send_to_phone", "telegram_status"),
+))
 from peter.integrations import telegram
 
 

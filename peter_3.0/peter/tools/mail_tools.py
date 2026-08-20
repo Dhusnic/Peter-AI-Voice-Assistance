@@ -14,7 +14,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="mail", version="1.0.0",
+    description="Email: read, search, send, star, archive, delete — over "
+                 "IMAP/SMTP.",
+    module=__name__, permissions=("network",),
+    tools=("check_email", "inbox_digest", "count_unread_email", "search_email",
+           "read_email", "mark_email_read", "star_email", "archive_email",
+           "delete_email", "send_email", "waiting_on"),
+))
 
 _MAX_LISTED = 15
 

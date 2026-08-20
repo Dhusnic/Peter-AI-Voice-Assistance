@@ -13,7 +13,17 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="time", version="1.0.0",
+    description="Time, reminders, alarms, timers, and the to-do list.",
+    module=__name__, permissions=(),
+    tools=("get_current_time", "set_reminder", "set_timer", "set_alarm",
+           "list_reminders", "cancel_reminder", "add_todo", "list_todos",
+           "complete_todo"),
+))
 
 
 def _parse_iso(value: str) -> datetime:

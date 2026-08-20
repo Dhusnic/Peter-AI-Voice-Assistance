@@ -9,6 +9,14 @@ gives the detailed table; this tool gives the short, speakable version.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
+
+register_skill(SkillManifest(
+    name="performance", version="1.0.0",
+    description="Per-tool timing report: busiest tools, native-rewrite candidates.",
+    module=__name__, permissions=(),
+    tools=("performance_report",),
+))
 
 
 @peter_tool(tier="read")

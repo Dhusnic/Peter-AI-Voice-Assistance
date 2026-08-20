@@ -22,7 +22,19 @@ from pathlib import Path
 import psutil
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="system", version="1.0.0",
+    description="Windows system control: apps, files, clipboard, volume, "
+                 "screenshots, stats, lock, PowerShell.",
+    module=__name__, permissions=("filesystem", "shell"),
+    tools=("open_app", "open_url", "list_files", "read_file", "search_files",
+           "write_file", "delete_file", "move_file", "take_screenshot",
+           "get_clipboard", "set_clipboard", "set_volume", "system_stats",
+           "lock_workstation", "run_powershell"),
+))
 
 # Reading a whole file into the context window is rarely what anyone wants, and
 # a stray 200MB log would blow the request. Truncate loudly instead.

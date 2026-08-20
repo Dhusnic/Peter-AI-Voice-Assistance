@@ -161,6 +161,30 @@ class BudgetConfig(BaseModel):
     action: Literal["warn", "block"] = "warn"
 
 
+class ToolFilterConfig(BaseModel):
+    """Per-turn tool-list filtering by keyword relevance. See
+    peter/agent/skills.py's relevant_tool_names().
+
+    Off by default, deliberately — this trades the prompt cache's stable
+    prefix for a smaller per-turn tool list, and at Peter's current tool
+    count that trade is not obviously a win: every provider bills the
+    cached-write more than the cached-read, and a per-turn-varying tool
+    list means the system prefix (system prompt + every tool schema) can
+    never hit that cache at all. Worth revisiting once the tool count grows
+    enough, or the numbers from spend_report/performance_report say
+    otherwise — not something to switch on speculatively.
+    """
+
+    enabled: bool = False
+    # How many skills' worth of tools to send, on top of always_include.
+    max_skills: int = Field(default=8, ge=1)
+    # Skill names always sent regardless of match — the general-purpose
+    # ones a turn is likely to need no matter what it's about.
+    always_include: list[str] = Field(
+        default_factory=lambda: ["system", "time", "memory"]
+    )
+
+
 class AgentConfig(BaseModel):
     # Which LLM vendor answers. Switchable at runtime with the
     # switch_llm_provider tool, or per-run with PETER__AGENT__PROVIDER.
@@ -201,6 +225,7 @@ class AgentConfig(BaseModel):
     vision: VisionConfig = Field(default_factory=VisionConfig)
     subagent: SubagentConfig = Field(default_factory=SubagentConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    tool_filter: ToolFilterConfig = Field(default_factory=ToolFilterConfig)
 
 
 class WakeConfig(BaseModel):

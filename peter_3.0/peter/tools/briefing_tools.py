@@ -7,8 +7,16 @@ and the on-request tool cannot drift apart.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.briefing import build_briefing, next_briefing_time
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="briefing", version="1.0.0",
+    description="On-demand morning briefing status.",
+    module=__name__, permissions=(),
+    tools=("daily_briefing", "briefing_schedule"),
+))
 
 
 @peter_tool(tier="read")

@@ -14,8 +14,19 @@ import subprocess
 from urllib.parse import urlsplit
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
 from peter.integrations.desktop import browsers, matching, media, places, youtube
+
+register_skill(SkillManifest(
+    name="desktop", version="1.0.0",
+    description="Your installed browser, bookmarks, YouTube, media keys, "
+                 "and local folders.",
+    module=__name__, permissions=("filesystem", "browser"),
+    tools=("open_website", "open_named_site", "search_bookmarks",
+           "open_bookmark", "play_youtube", "control_playback",
+           "list_locations", "open_location"),
+))
 
 _YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
 

@@ -36,6 +36,7 @@ to do when something is not working. For *how it is built*, see
    - [4.20 News](#420-news)
    - [4.21 Notes and journal](#421-notes-and-journal)
    - [4.22 Performance](#422-performance)
+   - [4.23 Skills](#423-skills)
 5. [What Peter does without being asked](#5-what-peter-does-without-being-asked)
 6. [Permissions — what stops and asks](#6-permissions)
 7. [Setup guides for each integration](#7-setup-guides)
@@ -143,7 +144,7 @@ with a message naming the field, rather than three hours later inside a tool.
 <a name="4-what-peter-can-do"></a>
 ## 4. What Peter can do
 
-110 tools across 16 areas. You never name a tool — you say what you want and
+138 tools across 22 areas. You never name a tool — you say what you want and
 Peter picks. The examples below are things you can say verbatim.
 
 <a name="41-your-machine"></a>
@@ -664,6 +665,24 @@ For the full per-tool table, run `python -m peter.main --perf-report`
 ([§8](#8-command-line-reference)) — it breaks every tool down by call count,
 average/P50/P95/max time, and how much of that was CPU versus waiting.
 
+<a name="423-skills"></a>
+### 4.23 Skills
+
+> **"what skills do you have"**
+> "do you have anything for GitHub"
+
+Every tool Peter has is grouped into a named, versioned skill — "weather,"
+"phone," "system" — with a short description and a note on what kind of
+resource it touches (network, filesystem, a shell, the phone, the browser).
+Asking what Peter can do lists the skills loaded this session; for the
+complete catalog including anything not configured yet, run
+`python -m peter.main --skill-list` ([§8](#8-command-line-reference)).
+
+This is bookkeeping, not a new layer of trust: every tool in every skill
+still passes through the same permission gate ([§6](#6-permissions)) it
+always has. A skill's description cannot grant it more access than its own
+tools already have.
+
 ---
 
 <a name="5-what-peter-does-without-being-asked"></a>
@@ -979,6 +998,7 @@ News and notes need nothing beyond `integrations.news.enabled` /
 | `--telegram-setup` | Find your Telegram chat id |
 | `--briefing` | Print today's briefing and exit |
 | `--perf-report` | Print per-tool timing stats (last 7 days) and exit |
+| `--skill-list` | Print every skill and its usable/not-configured status and exit |
 
 `--health` is the first thing to run when anything seems wrong. It reports every
 subsystem, distinguishing **disabled** (you turned it off), **not configured**
@@ -989,7 +1009,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 <a name="9-complete-tool-reference"></a>
 ## 9. Complete tool reference
 
-137 tools. `[r]` read, `[w]` write, `[!]` always confirms.
+138 tools. `[r]` read, `[w]` write, `[!]` always confirms.
 
 **System** — `open_app` [w] · `list_files` [r] · `read_file` [r] ·
 `search_files` [r] · `write_file` [w] · `delete_file` [!] · `move_file` [w] ·
@@ -1065,6 +1085,8 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 `delete_note` [w]
 
 **Performance** — `performance_report` [r]
+
+**Skills** — `list_skills` [r]
 
 **Desktop** — `open_url` [w] · `open_website` [w] · `open_named_site` [w] ·
 `play_youtube` [w] · `control_playback` [w] · `search_bookmarks` [r] ·

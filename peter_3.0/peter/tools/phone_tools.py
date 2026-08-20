@@ -35,9 +35,23 @@ from __future__ import annotations
 from datetime import datetime
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.errors import PeterError
 from peter.core.services import services
 from peter.integrations.phone import adb
+
+register_skill(SkillManifest(
+    name="phone", version="1.0.0",
+    description="Reads and controls the phone over ADB: SMS, calls, "
+                 "Spotify, alarms, screenshots, voice notes.",
+    module=__name__, permissions=("phone",),
+    tools=("read_sms", "latest_code", "phone_status", "read_call_log",
+           "read_phone_screen", "open_link_on_phone", "save_phone_screenshot",
+           "transcribe_phone_voice_note", "call_contact", "make_phone_call",
+           "answer_phone_call", "hang_up_phone_call", "play_music_on_phone",
+           "pause_music_on_phone", "skip_track_on_phone", "set_phone_alarm",
+           "stop_phone_alarm"),
+))
 
 
 def _cfg():

@@ -8,8 +8,16 @@ only — no background sweep — for the same reason as expense scanning.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.errors import PeterError
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="deliveries", version="1.0.0",
+    description="Shipment tracker, built by parsing courier SMS.",
+    module=__name__, permissions=("phone",),
+    tools=("scan_delivery_sms", "pending_deliveries"),
+))
 
 
 @peter_tool(tier="write")

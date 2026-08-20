@@ -134,7 +134,7 @@ class Brain:
         before = _usage_snapshot(self.provider.usage)
         result = loop.run_turn(
             provider=self.provider,
-            tools=registry.tool_specs(),
+            tools=self._turn_tools(user_text),
             user_text=self._build_user_content(user_text),
             execute=self._execute,
             max_pause_restarts=self.config.agent.max_pause_restarts,
@@ -152,6 +152,28 @@ class Brain:
             tool_calls=result.tool_calls,
             stop_reason=result.stop_reason,
         )
+
+    def _turn_tools(self, user_text: str):
+        """The tool list for this turn — the full registry, unless
+        agent.tool_filter is switched on.
+
+        Off by default: see ToolFilterConfig's docstring for why a per-turn-
+        varying tool list fights the prompt cache rather than obviously
+        saving anything. relevant_tool_names() itself falls back to `None`
+        (send everything) on a no-match, so even with filtering enabled a
+        turn Claude can't classify never loses access to a tool.
+        """
+        tools = registry.tool_specs()
+        cfg = self.config.agent.tool_filter
+        if not cfg.enabled:
+            return tools
+
+        from peter.agent import skills
+
+        subset = skills.relevant_tool_names(user_text, cfg)
+        if subset is None:
+            return tools
+        return [t for t in tools if t.name in subset]
 
     def usage_summary(self) -> str:
         """Session totals, including any provider used earlier."""

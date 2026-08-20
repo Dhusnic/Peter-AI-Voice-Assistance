@@ -11,7 +11,17 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="calendar", version="1.0.0",
+    description="Calendar events and Google Tasks.",
+    module=__name__, permissions=("network",),
+    tools=("check_calendar", "upcoming_events", "next_event",
+           "create_calendar_event", "delete_calendar_event",
+           "list_google_tasks", "add_google_task", "complete_google_task"),
+))
 
 
 def _parse_iso(value: str) -> datetime:

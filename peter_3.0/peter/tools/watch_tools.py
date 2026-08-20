@@ -10,8 +10,17 @@ from __future__ import annotations
 from datetime import datetime
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
 from peter.price_watch import _money
+
+register_skill(SkillManifest(
+    name="price_watch", version="1.0.0",
+    description="Standing price/stock watches that speak up on a drop or restock.",
+    module=__name__, permissions=("network", "browser"),
+    tools=("watch_price", "list_price_watches", "cancel_price_watch",
+           "check_watches_now"),
+))
 
 
 @peter_tool(tier="write")

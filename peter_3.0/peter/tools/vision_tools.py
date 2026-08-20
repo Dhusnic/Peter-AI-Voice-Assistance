@@ -14,8 +14,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.errors import PeterError
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="vision", version="1.0.0",
+    description="Look at the screen, an image file, or the current browser "
+                 "page and answer a question about it.",
+    module=__name__, permissions=(),
+    tools=("look_at_screen", "look_at_image", "look_at_browser_page"),
+))
 
 
 @peter_tool(tier="read")

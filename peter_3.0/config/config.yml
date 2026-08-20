@@ -148,6 +148,19 @@ agent:
     daily_inr: 0
     action: warn
 
+  # Per-turn tool-list filtering by keyword relevance (see peter/agent/
+  # skills.py). OFF by default and deliberately so: the tool list is part of
+  # the cached prompt prefix (see the cache: block above), and a per-turn-
+  # varying tool list means that prefix can never hit the cache at all. At
+  # today's tool count, the tokens saved by sending fewer schemas can easily
+  # be smaller than what a lost cache hit costs. A no-match turn always
+  # falls back to sending every tool, so turning this on cannot hide a tool
+  # Claude needed — it can only ever cost you the caching trade above.
+  tool_filter:
+    enabled: false
+    max_skills: 8
+    always_include: [system, time, memory]
+
   # Model used for cheap/routine background turns regardless of active
   # provider (e.g. summarizing, quick lookups) — always Claude's cheapest,
   # independent of `provider` above.

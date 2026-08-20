@@ -8,6 +8,7 @@
     python -m peter.main --briefing      print today's briefing and exit
     python -m peter.main --telegram-setup  find your Telegram chat id
     python -m peter.main --perf-report   print per-tool timing stats and exit
+    python -m peter.main --skill-list    print every skill and its status and exit
 
 Two things this does that peter_1.0 did not:
 
@@ -434,6 +435,23 @@ def _cmd_briefing(config: Config) -> int:
     return 0
 
 
+def _cmd_skill_list(config: Config) -> int:
+    """Every skill Peter has, and whether it's currently usable.
+
+    Loads every module unconditionally (not the credential-gated subset a
+    live session uses) — safe here because this process prints and exits
+    immediately rather than going on to serve turns, so there is no live
+    tool list this could accidentally widen.
+    """
+    from peter.agent import skills
+
+    registry.load_all_tools()
+    print()
+    print(skills.skills_report(config))
+    print()
+    return 0
+
+
 def _cmd_perf_report(config: Config) -> int:
     """Detailed per-tool timing table over the last 7 days. Reads whatever
     the running/most-recent Peter process has already recorded in
@@ -470,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="find your Telegram chat id and exit")
     parser.add_argument("--perf-report", action="store_true",
                         help="print per-tool timing stats (last 7 days) and exit")
+    parser.add_argument("--skill-list", action="store_true",
+                        help="print every skill and its status and exit")
     args = parser.parse_args(argv)
 
     # Windows consoles default to cp1252, which cannot encode a rupee sign or
@@ -521,6 +541,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_telegram_setup(config)
     if args.perf_report:
         return _cmd_perf_report(config)
+    if args.skill_list:
+        return _cmd_skill_list(config)
 
     if not config.secrets.any_llm_key:
         log.error(

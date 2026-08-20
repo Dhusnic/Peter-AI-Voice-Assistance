@@ -13,8 +13,16 @@ than raising.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
 from peter.llm import factory, pricing
+
+register_skill(SkillManifest(
+    name="llm", version="1.0.0",
+    description="Switch/inspect the active LLM provider, and the spend report.",
+    module=__name__, permissions=("network",),
+    tools=("switch_llm_provider", "llm_status", "spend_report"),
+))
 
 
 @peter_tool(tier="write")

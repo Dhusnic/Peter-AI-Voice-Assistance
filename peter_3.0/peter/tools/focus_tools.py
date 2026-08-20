@@ -11,6 +11,14 @@ from __future__ import annotations
 
 from peter import focus
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
+
+register_skill(SkillManifest(
+    name="focus", version="1.0.0",
+    description="Timed, distraction-muted work blocks.",
+    module=__name__, permissions=(),
+    tools=("start_focus_session", "end_focus_session", "focus_status"),
+))
 
 
 @peter_tool(tier="write")

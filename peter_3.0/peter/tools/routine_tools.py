@@ -8,7 +8,15 @@ its steps do not re-confirm individually.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="routines", version="1.0.0",
+    description="Named chains of Peter's own tools, run as one voice command.",
+    module=__name__, permissions=(),
+    tools=("run_routine", "list_routines"),
+))
 
 
 @peter_tool(tier="write")

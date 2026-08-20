@@ -5,8 +5,15 @@ peter/integrations/weather.py.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.errors import PeterError
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="weather", version="1.0.0",
+    description="Current weather via Open-Meteo, no API key.",
+    module=__name__, permissions=("network",), tools=("get_weather",),
+))
 
 
 @peter_tool(tier="read")

@@ -9,8 +9,17 @@ from __future__ import annotations
 from datetime import datetime
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
 from peter.workspace import capture, restore
+
+register_skill(SkillManifest(
+    name="workspace", version="1.0.0",
+    description="Save and restore a set of open applications by name.",
+    module=__name__, permissions=("filesystem",),
+    tools=("save_workspace", "restore_workspace", "list_workspaces",
+           "delete_workspace"),
+))
 
 
 @peter_tool(tier="write")

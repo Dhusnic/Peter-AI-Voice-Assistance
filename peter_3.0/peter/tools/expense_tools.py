@@ -10,8 +10,16 @@ a worse failure mode than one that only runs when asked.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.errors import PeterError
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="expenses", version="1.0.0",
+    description="Personal spend ledger, built by parsing bank/UPI SMS.",
+    module=__name__, permissions=("phone",),
+    tools=("scan_bank_sms", "expense_report"),
+))
 
 
 @peter_tool(tier="write")

@@ -9,9 +9,18 @@ misheard sentence is a liability with very little upside.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.errors import PeterError
 from peter.core.services import services
 from peter.integrations.dev import gh, git, repos, resolve
+
+register_skill(SkillManifest(
+    name="dev", version="1.0.0",
+    description="Git status, commits, pull requests, and CI — read-only.",
+    module=__name__, permissions=("shell", "network"),
+    tools=("list_repos", "git_status", "recent_commits", "my_pull_requests",
+           "ci_status", "work_log", "standup_notes"),
+))
 
 
 def _dev_config():

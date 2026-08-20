@@ -10,7 +10,17 @@ time.
 from __future__ import annotations
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="docs", version="1.0.0",
+    description="Full-text search over folders you point Peter at, with "
+                 "cited answers.",
+    module=__name__, permissions=("filesystem",),
+    tools=("index_folder", "search_docs", "ask_docs", "docs_index_status",
+           "forget_folder"),
+))
 
 
 @peter_tool(tier="write")

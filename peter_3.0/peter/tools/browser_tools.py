@@ -19,9 +19,20 @@ from __future__ import annotations
 from datetime import datetime
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.errors import IntegrationError
 from peter.core.services import services
 from peter.integrations.browser.interlock import PurchaseBlocked, guard
+
+register_skill(SkillManifest(
+    name="browser", version="1.0.0",
+    description="Scripted browser automation — read pages, click, type, log "
+                 "in, compare across sites. Never places an order.",
+    module=__name__, permissions=("network", "browser"),
+    tools=("browse_page", "check_price", "compare_across_sites",
+           "browser_status", "take_page_screenshot", "find_on_page",
+           "browser_click", "browser_type", "browser_login", "close_browser"),
+))
 
 
 def _check_allowed(url: str) -> str | None:

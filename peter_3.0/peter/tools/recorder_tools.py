@@ -12,7 +12,17 @@ from __future__ import annotations
 from datetime import datetime
 
 from peter.agent.registry import peter_tool
+from peter.agent.skills import SkillManifest, register_skill
 from peter.core.services import services
+
+register_skill(SkillManifest(
+    name="recorder", version="1.0.0",
+    description="Record system audio, transcribe and summarise meetings.",
+    module=__name__, permissions=("filesystem",),
+    tools=("start_recording", "stop_recording", "recording_status",
+           "list_recordings", "read_meeting_notes", "summarise_recording",
+           "audio_sources"),
+))
 
 
 @peter_tool(tier="write")

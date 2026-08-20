@@ -185,6 +185,13 @@ flowchart LR
         PF3["Zero per-tool code changes needed"]
     end
 
+    subgraph SG_SK["Skills"]
+        direction TB
+        SK1["Every tool grouped into a named, versioned capability"]
+        SK2["--skill-list shows what's usable vs. not configured"]
+        SK3["Policy gate still sits above every skill, unchanged"]
+    end
+
     P --> SG_V
     P --> SG_S
     P --> SG_T
@@ -205,6 +212,7 @@ flowchart LR
     P --> SG_NW
     P --> SG_NT
     P --> SG_PF
+    P --> SG_SK
 ```
 
 ### 1.2 What each area means in practice
@@ -219,7 +227,7 @@ flowchart LR
 | **Calendar** | "What's on my calendar tomorrow" | Talks to Google Calendar/Tasks via a narrow OAuth client (sensitive, not restricted, scope — see §2.7). |
 | **Browser** | "Check the price of this laptop on Flipkart" | No official API exists for that site (see README for the full API survey), so Peter drives a real, logged-in Playwright browser instead. It reads the page's own structured product data first (JSON-LD/OpenGraph — what Google Shopping reads), falling back to a screenshot only if that's absent. |
 | **Multi-LLM** | "Switch to Gemini" | The whole conversation's tool-calling loop is vendor-neutral, so switching providers mid-session works without rewriting history — see §2.2.2. When Gemini is set to `auto` (this deployment's default), each turn's own text picks a cheap or a strong model with no extra API call — see §2.2.4. |
-| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 110 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
+| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 138 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
 | **Proactive** | (nothing — that's the point) | "Team meeting in 10 minutes, with Priya and Arjun" fires on its own from a calendar poll. "3 of your 23 unread look like they need a reply" fires from a mail poll. Both are read-only nudges, never actions taken on your behalf — see §2.10. |
 | **Phone** | (from Telegram) "what's on my calendar tomorrow" | The same brain, tools, memory and permission gate, reached over the Telegram Bot API — and every proactive nudge mirrored the other way, so a reminder finds you when you are not at the machine. An unknown chat gets *no reply at all*: replying would confirm the bot exists. Anything needing confirmation is declined remotely rather than left hanging on a console prompt nobody is at — see §2.11. |
 | **Vision** | "What's this error?" (pointing at the screen) | The screen is captured, downscaled, and actually read by a vision model. `take_screenshot` saved a PNG and stopped; this closes the loop. One isolated call, never left in conversation history — a megapixel image re-sent every turn would be the most expensive mistake available — see §2.14. |
@@ -232,6 +240,8 @@ flowchart LR
 | **Routines** | "Run my good night routine" | A named chain of Peter's own tools, defined by hand in `config.yml` and run as one command with no per-step confirmation — see §2.19. |
 | **News** | "What's in the news today" / "news about cricket" | Google News' public RSS feed — free, no API key. Folds into the morning briefing the same way weather does — see §2.19. |
 | **Notes** | "Note that the client wants the demo moved to Friday" | A timestamped, full-text-searchable journal, kept deliberately separate from memory's facts and preferences — see §2.19. |
+| **Performance** | "How's your performance" | Every tool call timed automatically (wall/CPU/wait), flagging only the rare tool that's genuinely CPU-bound enough to be worth a native rewrite — see §2.20. |
+| **Skills** | "What skills do you have" / "do you have GitHub" | Every tool module is grouped into a named, versioned capability with a short description and advisory permission tags — `--skill-list` shows the full catalog including what isn't configured yet. Stage 1 of a longer ecosystem plan; the policy gate above it is unchanged — see §2.21. |
 
 ### 1.3 What is deliberately **not** built yet
 
@@ -568,7 +578,7 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **137 tools currently registered**, split by permission tier:
+- **138 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
@@ -597,7 +607,8 @@ flowchart LR
 | `news_tools.py` | 1 | 0 | top headlines (Google News RSS, no key needed) |
 | `notes_tools.py` | 2 | 2 | add/search/list/delete quick journal notes |
 | `perf_tools.py` | 1 | 0 | per-tool timing report (busiest tools, native-rewrite candidates) |
-| **Total** | **68** | **69** | |
+| `skill_tools.py` | 1 | 0 | list every skill and its usable/not-configured status |
+| **Total** | **69** | **69** | |
 
   Seven of the write-tier tools are pulled back to *confirm* by standing rules
   in `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
@@ -1711,6 +1722,92 @@ guess either way.
 
 ---
 
+### 2.21 Skills — `peter/agent/skills.py`, `peter/tools/skill_tools.py`
+
+Stage 1 of a longer-term plan to grow Peter the way OpenClaw's ecosystem
+grew — capabilities as installable, self-describing packages rather than
+another module wired straight into the core — without building the parts of
+that plan (remote install, a public registry, sandboxing untrusted code)
+that need real infrastructure this project does not have yet, or that would
+be a genuine security regression to fake. See the plan notes for the full
+staging; this section covers only what actually shipped.
+
+**A manifest is a small, typed, co-located object — not a second file
+format.** Every one of the 26 tool modules under `peter/tools/` declares one
+`SkillManifest` (name, version, description, a `module` field set to its own
+`__name__`, a small advisory `permissions` tuple, and the exact tool names it
+owns), registered at import time via `register_skill()` right next to the
+`@peter_tool` functions it describes. The alternative — external
+`skill.yaml` files in a separate directory tree — was considered and
+rejected for this stage specifically: it is Stage-2/3-shaped infrastructure
+(a parser, a loader, a path convention) for skills that, today, still ship
+in the same commit as everything else. A Python object gets the same
+self-description with none of that, and fails at import time on a typo
+instead of at first use.
+
+**`permissions` enforces nothing — it never touches execution.** The
+existing policy gate (§2.4) already sits above every tool call regardless of
+which module registered it, which is exactly what point #5 of the ecosystem
+plan asked for; nothing new was needed to satisfy it. The manifest's
+permission tags (`network`, `filesystem`, `shell`, `phone`, `browser` — a
+short, fixed vocabulary `SkillManifest.__post_init__` validates) exist purely
+so `list_skills`/`--skill-list` can show at a glance what kind of resource a
+skill touches. A skill cannot grant itself more access by claiming fewer
+permissions in its manifest than its tools' real tiers allow.
+
+**The consistency guarantee is the one test that matters most here.**
+`tests/test_skills.py::test_every_registered_tool_is_covered_by_exactly_one_
+skill` asserts the union of every manifest's declared tools equals the full
+set of names in `registry.all_records()` after `load_all_tools()` — so a
+tool added later without updating its skill's manifest fails a test instead
+of `list_skills` silently going stale. This is the same "describe reality,
+not a snapshot of it" property `registry.py`'s own docstring already
+demands of the tool schemas themselves.
+
+**`--skill-list` and the `list_skills` tool intentionally see different
+amounts of the world, and both say so.** `--skill-list` calls
+`registry.load_all_tools()` with no config — every module, gated or not —
+because that process prints and exits, so there is no live tool list it
+could accidentally widen. `list_skills`, called mid-conversation, only
+reports on whatever this session actually loaded (the credential-gated
+subset `usable_modules()` already picked at startup); reloading everything
+inside a live session would have a real side effect — permanently
+unlocking previously-hidden tool schemas for the rest of the conversation,
+since `registry.tool_specs()` returns every currently-registered record. The
+docstring on `list_skills` says plainly that it is scoped to what loaded,
+and points at `--skill-list` for the complete catalog.
+
+**The relevance filter (`relevant_tool_names`) is built, wired, and ships
+disabled — because it genuinely conflicts with the caching design, not just
+out of caution.** The tool list is part of the cached prompt prefix on every
+vendor (`registry.py`'s own docstring, and
+`test_tools_are_sorted_so_the_cache_prefix_is_stable`), and a per-turn
+filter by definition makes that list vary with `user_text`. At 138 tools,
+the tokens saved by a smaller per-turn list can plausibly be smaller than
+what a lost cache hit costs — a cache *write* bills more than a cache
+*read* on every provider here. `agent.tool_filter.enabled` therefore
+defaults to `false` in `config.yml`, with the tradeoff stated in both the
+config comment and `ToolFilterConfig`'s docstring, not left for someone to
+discover the hard way. The filter itself reuses the exact tokenise-and-
+score approach `memory/store.py`'s `_fts_query` and `notes.py` already use
+for free-form speech — no new dependency, no embeddings — and its one
+hard rule is the safe fallback: a turn that matches nothing returns `None`
+("send everything"), never an empty set. A tool Claude needed can be sent
+unnecessarily by this filter; it can never be hidden by it.
+
+**Explicitly not built, and why:** remote install (`peter skill install
+<url>`) needs a sandbox that does not exist — fetching and executing
+third-party code without one would be a real security regression for an
+assistant with call/SMS/shell/file access, not a missing convenience. A
+public registry and a third-party `peter_sdk` package have no consumers to
+serve yet. Skill sandboxing is a project of its own, and pointless before
+anything untrusted is actually being installed. Versioning/rollback
+commands are decorative until a skill can update independently of the rest
+of this repository. All four wait for Stage 2, when there is an actual
+external skill to justify building any of them.
+
+---
+
 ## Appendix — file map
 
 ```
@@ -1723,7 +1820,8 @@ peter_3.0/
 │   │   ├── brain.py            # §2.2 turn orchestration, §2.17 spend recording
 │   │   ├── subagents.py        # §2.16 per-page fan-out for comparisons
 │   │   ├── prompts.py          # §2.2.3 frozen system prompt
-│   │   └── registry.py         # §2.3 @peter_tool → schema + tier
+│   │   ├── registry.py         # §2.3 @peter_tool → schema + tier
+│   │   └── skills.py           # §2.21 manifest layer + relevance filter
 │   ├── llm/
 │   │   ├── vision.py            # §2.14 one-shot image calls, per vendor
 │   │   ├── loop.py              # §2.2.1 the one shared tool-call loop
@@ -1736,7 +1834,7 @@ peter_3.0/
 │   ├── policy/
 │   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
 │   │   └── audit.py              # append-only JSONL trail
-│   ├── tools/                   # §2.3 the 137 registered tools
+│   ├── tools/                   # §2.3 the 138 registered tools
 │   ├── memory/store.py          # §2.5 SQLite + FTS5
 │   ├── scheduler/jobs.py        # §2.8 APScheduler + SQLite jobstore
 │   ├── meeting_prep.py          # §2.10 calendar + memory nudge
