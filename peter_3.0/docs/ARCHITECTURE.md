@@ -729,10 +729,26 @@ flowchart TD
   code-level enforcement of RBI's mandatory-2FA rule from §1.3: even if the
   policy gate were somehow bypassed, this layer still can't complete a
   payment.
-- Nine tools total, split precisely because a single `browse_and_extract`
-  tool can't carry one permission tier: reading is `read`, clicking/typing
-  is `write`, and "place order" isn't a *tier* at all — it's structurally
-  unreachable.
+- Ten tools total (one of them, `compare_across_sites`, delegates to the
+  §2.16 subagent fan-out rather than reading a page itself), split precisely
+  because a single `browse_and_extract` tool can't carry one permission tier:
+  reading is `read`, clicking/typing is `write`, and "place order" isn't a
+  *tier* at all — it's structurally unreachable.
+- **The engine itself is configurable** (`integrations.browser.engine:
+  chromium | firefox`, default `chromium`) — Playwright drives Firefox just
+  as directly as Chromium, as its own bundled build rather than your
+  installed one, so "log me in to Myntra" can open in whichever browser
+  feels native rather than always defaulting to something Chrome-shaped
+  regardless of `desktop.preferred_browser` (§2.6b — a genuinely different
+  setting, since that one only ever opens plain links for you to look at).
+  Chromium's anti-detection launch flag
+  (`--disable-blink-features=AutomationControlled`) is Chromium-only CLI
+  syntax; sending it to Firefox fails the launch outright rather than being
+  ignored, so `_ENGINE_ARGS` is keyed per engine instead of hardcoded.
+  Switching engine needs a fresh `profile_dir` — a Chromium user-data
+  directory and a Firefox profile are structurally incompatible formats, so
+  a launch against the wrong one fails rather than silently doing something
+  odd.
 
 ---
 
@@ -1079,6 +1095,26 @@ The Bot API is reached with `urllib` — no new dependency. `getUpdates` is a
 moment a message arrives, which is both cheaper and more responsive than
 polling every second.
 
+**A submodule silently shadowed the client accessor — a real bug, found by
+running `--telegram-setup` twice in a row, not by reading the code.**
+`peter/integrations/telegram/__init__.py` defines `client(config)`; the
+package also had a submodule of the exact same name (`client.py`). Python
+binds an imported submodule onto its parent package's namespace under the
+submodule's own name — a side effect of the import system, not of anything
+this code does deliberately — so the moment `client()`'s own body imported
+that submodule (which it does, on first use, to reach `TelegramClient`), the
+package's `client` attribute silently flipped from *function* to *module*.
+The first call still worked, since the function reference had already been
+retrieved before its own body ran; every call after that resolved
+`telegram.client` to the module object instead and raised `'module' object is
+not callable` — exactly what `--telegram-setup` hit: `.me()` succeeded, then
+`find_chat_ids()` failed one line later. The existing tests never caught this
+because they patch `telegram.client` directly with a lambda, which replaces
+the exact attribute the bug corrupts rather than exercising the real import
+path. Fixed by renaming the submodule to `api.py`, which removes the name
+collision entirely; a regression test now calls the real, unpatched
+`client()` twice in a row.
+
 ---
 
 ### 2.12 Local capture and transcription — `peter/meeting_notes.py`, `peter/integrations/desktop/recorder.py`
@@ -1204,6 +1240,21 @@ bodies.
 because the first number in an SMS is very often an order id or an amount. The
 code is then read out digit by digit — a speech engine given "123456" says "one
 hundred and twenty-three thousand…".
+
+**`adb_path` is resolved against the project root, not left to depend on the
+process's working directory — a real bug, found by actually running it.**
+Android Platform Tools has no installer; a common way to get it is unzipping
+the download straight into the repo rather than adding it to PATH, and a
+relative `adb_path` pointing into that folder worked *only by accident* when
+Peter happened to be launched from inside `peter_3.0/` — `shutil.which()` and
+`subprocess.run()` both resolve a relative path against the current working
+directory, unlike every other path in `config.yml` (`data_dir`,
+`browser.profile_dir`, ...), which all go through `Config.resolve()` against
+`PROJECT_ROOT`. `_resolved_adb_path()` gives `adb_path` the same treatment,
+with one deliberate exception: a bare `"adb"` (no directory component at all)
+is left untouched, since that means "search PATH," and resolving it against
+the project root would instead look for a literal file named `adb` sitting at
+the repo root.
 
 This is the honest end of the payment story from §2.6: Peter can walk a checkout
 to the payment screen but can never complete it, and reading the OTP aloud so
