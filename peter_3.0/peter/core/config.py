@@ -569,6 +569,14 @@ class PhoneConfig(BaseModel):
     # How recent a message must be to count as "the code that just arrived".
     otp_window_minutes: int = Field(default=10, ge=1, le=120)
     timeout_seconds: float = Field(default=20.0, gt=0)
+    # Where `save_phone_screenshot` looks, in order, for the file to pull.
+    # Stock Android's own screenshot folder plus the common vendor variant.
+    pull_dirs: list[str] = Field(
+        default_factory=lambda: [
+            "/sdcard/Pictures/Screenshots",
+            "/sdcard/DCIM/Screenshots",
+        ]
+    )
 
 
 class DocsConfig(BaseModel):
@@ -754,6 +762,10 @@ class Config(BaseModel):
     @property
     def recordings_dir(self) -> Path:
         return self.data_dir / "recordings"
+
+    @property
+    def phone_pulls_dir(self) -> Path:
+        return self.data_dir / "phone_pulls"
 
     def resolve(self, value: str) -> Path:
         """Resolve a config path value against the project root."""

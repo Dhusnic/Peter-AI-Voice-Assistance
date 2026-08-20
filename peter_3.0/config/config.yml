@@ -514,6 +514,10 @@ integrations:
     sms_limit: 10
     otp_window_minutes: 10
     timeout_seconds: 20
+    # Folders save_phone_screenshot checks, in order, for the newest file.
+    pull_dirs:
+      - "/sdcard/Pictures/Screenshots"
+      - "/sdcard/DCIM/Screenshots"
 
   # ------------------------------------------------------------------- docs
   # Full-text search over folders you point Peter at, and answers built from

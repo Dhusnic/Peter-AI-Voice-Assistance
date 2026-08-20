@@ -345,3 +345,323 @@ def test_a_path_with_a_space_in_the_directory_name_resolves_correctly():
         phone_config(adb_path="./mobile dev/platform-tools/adb.exe")
     )
     assert "mobile dev" in resolved
+
+
+# --------------------------------------------------------------- call log
+@pytest.fixture(autouse=True)
+def _reset_contacts_cache(monkeypatch):
+    """The contacts cache is module-level and keyed on (adb_path, serial),
+    which most tests share — without this, one test's fake ADB output leaks
+    into the next test's contact lookups."""
+    monkeypatch.setattr(adb, "_contacts_cached", {})
+
+
+def test_call_log_parses_type_name_and_duration(monkeypatch):
+    fake_adb(monkeypatch, (
+        f"Row: 0 number=+919000000000, name=NULL, type=3, date={ms(5)}, duration=0\n"
+        f"Row: 1 number=+919111111111, name=Office, type=2, date={ms(1)}, duration=125\n"
+    ))
+
+    found = adb.calls(phone_config())
+
+    assert found[0].name == "Office"
+    assert found[0].call_type == "outgoing"
+    assert found[0].duration_seconds == 125
+    assert found[1].call_type == "missed"
+    assert found[1].name is None
+    assert "Missed call" in found[1].spoken()
+
+
+def test_a_null_call_log_column_is_treated_as_missing(monkeypatch):
+    fake_adb(monkeypatch, f"Row: 0 number=NULL, name=NULL, type=1, date={ms(1)}, duration=10\n")
+    found = adb.calls(phone_config())
+    assert found[0].number == "unknown"
+    assert found[0].name is None
+
+
+def test_an_unrecognised_call_type_is_reported_generically(monkeypatch):
+    fake_adb(monkeypatch, f"Row: 0 number=+9190, name=NULL, type=99, date={ms(1)}, duration=5\n")
+    assert adb.calls(phone_config())[0].call_type == "call"
+
+
+def test_calls_come_back_newest_first(monkeypatch):
+    fake_adb(monkeypatch, (
+        f"Row: 0 number=A, name=NULL, type=1, date={ms(60)}, duration=1\n"
+        f"Row: 1 number=B, name=NULL, type=1, date={ms(1)}, duration=1\n"
+    ))
+    assert [c.number for c in adb.calls(phone_config())] == ["B", "A"]
+
+
+# -------------------------------------------------------- contact resolution
+def _routed_adb(monkeypatch, routes):
+    """Like fake_adb, but the canned response depends on the device command,
+    since a test needs the SMS/call-log query and the contacts query to
+    return different rows in the same run."""
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        command = args[-1]
+        for needle, output in routes:
+            if needle in command:
+                return SimpleNamespace(returncode=0, stdout=output, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+    return calls
+
+
+def test_sms_sender_is_labelled_with_a_contact_name(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("content://sms", f"Row: 0 address=+919000000000, body=hi, date={ms(1)}\n"),
+        ("content://com.android.contacts",
+         "Row: 0 display_name=Mom, number=+91 90000 00000\n"),
+    ])
+
+    found = adb.messages(phone_config())
+
+    assert found[0].sender_name == "Mom"
+    assert found[0].spoken().startswith("Mom (")
+
+
+def test_a_sender_with_no_matching_contact_falls_back_to_the_raw_address(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("content://sms", f"Row: 0 address=AX-BLINKIT, body=hi, date={ms(1)}\n"),
+        ("content://com.android.contacts", "Row: 0 display_name=Mom, number=+919000000000\n"),
+    ])
+
+    found = adb.messages(phone_config())
+
+    assert found[0].sender_name is None
+    assert found[0].spoken().startswith("AX-BLINKIT (")
+
+
+def test_call_log_falls_back_to_contacts_when_the_device_gives_no_name(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("content://call_log", f"Row: 0 number=+919000000000, name=NULL, type=1, "
+                               f"date={ms(1)}, duration=30\n"),
+        ("content://com.android.contacts", "Row: 0 display_name=Mom, number=9000000000\n"),
+    ])
+
+    assert adb.calls(phone_config())[0].name == "Mom"
+
+
+def test_a_broken_contacts_read_does_not_break_sms_reading(monkeypatch):
+    """Best-effort: contacts access can be blocked while SMS still works."""
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if "content://sms" in args[-1]:
+            return SimpleNamespace(
+                returncode=0, stdout=f"Row: 0 address=A, body=hi, date={ms(1)}\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="error: permission denied")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+    found = adb.messages(phone_config())  # must not raise
+
+    assert found[0].body == "hi"
+    assert found[0].sender_name is None
+
+
+def test_the_where_clause_query_stays_the_first_adb_call(monkeypatch):
+    """Regression guard: contacts resolution is a second call made *after* the
+    main query, so existing assertions elsewhere about "the first call" keep
+    inspecting the right command."""
+    calls_seen = fake_adb(monkeypatch, "")
+    adb.messages(phone_config())
+    assert "content://sms" in calls_seen[0][-1]
+
+
+# ------------------------------------------------------------ phone screen
+def test_screenshot_bytes_returns_the_raw_png(monkeypatch):
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+    monkeypatch.setattr(subprocess, "run", lambda args, **k: SimpleNamespace(
+        returncode=0, stdout=b"\x89PNGrestofimage", stderr=b""))
+
+    assert adb.screenshot_bytes(phone_config()) == b"\x89PNGrestofimage"
+
+
+def test_screenshot_bytes_uses_exec_out_not_shell(monkeypatch):
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+    seen = {}
+
+    def run(args, **k):
+        seen["args"] = args
+        return SimpleNamespace(returncode=0, stdout=b"data", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    adb.screenshot_bytes(phone_config())
+
+    assert seen["args"][1:] == ["exec-out", "screencap", "-p"]
+
+
+def test_screenshot_bytes_raises_on_an_empty_capture(monkeypatch):
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+    monkeypatch.setattr(subprocess, "run", lambda args, **k: SimpleNamespace(
+        returncode=0, stdout=b"", stderr=b"no display attached"))
+
+    with pytest.raises(IntegrationError):
+        adb.screenshot_bytes(phone_config())
+
+
+def test_screenshot_bytes_says_adb_is_missing(monkeypatch):
+    monkeypatch.setattr(adb, "available", lambda cfg: False)
+    with pytest.raises(IntegrationError) as caught:
+        adb.screenshot_bytes(phone_config())
+    assert "Platform Tools" in caught.value.user_action
+
+
+# --------------------------------------------------------- opening a link
+def test_open_url_rejects_a_non_http_scheme(monkeypatch):
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+    with pytest.raises(IntegrationError):
+        adb.open_url(phone_config(), "intent://evil#Intent;end")
+
+
+def test_open_url_sends_a_view_intent(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.open_url(phone_config(), "https://example.com/checkout?x=1")
+
+    command = calls[0][-1]
+    assert "am start" in command
+    assert "android.intent.action.VIEW" in command
+    assert "https://example.com/checkout?x=1" in command
+
+
+def test_open_url_escapes_embedded_quotes(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.open_url(phone_config(), 'https://example.com/"x')
+    assert '\\"' in calls[0][-1]
+
+
+# -------------------------------------------------------- pulling a file
+def test_pull_latest_file_skips_an_empty_directory(monkeypatch, tmp_path):
+    def run(args, **k):
+        if args[-2:] == ["shell", 'ls -t "/sdcard/empty" 2>/dev/null']:
+            return SimpleNamespace(returncode=1, stdout="", stderr="No such file")
+        if args[-2:] == ["shell", 'ls -t "/sdcard/real" 2>/dev/null']:
+            return SimpleNamespace(returncode=0, stdout="shot.png\nolder.png\n", stderr="")
+        if len(args) >= 2 and args[1] == "pull":
+            return SimpleNamespace(returncode=0, stdout="1 file pulled", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected call")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+    local = adb.pull_latest_file(phone_config(), ["/sdcard/empty", "/sdcard/real"], tmp_path)
+
+    assert local == tmp_path / "shot.png"
+
+
+def test_pull_latest_file_raises_when_nothing_is_found(monkeypatch, tmp_path):
+    monkeypatch.setattr(subprocess, "run", lambda args, **k: SimpleNamespace(
+        returncode=1, stdout="", stderr="No such file"))
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+    with pytest.raises(IntegrationError) as caught:
+        adb.pull_latest_file(phone_config(), ["/sdcard/a", "/sdcard/b"], tmp_path)
+    assert caught.value.user_action
+
+
+def test_pull_latest_file_says_adb_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(adb, "available", lambda cfg: False)
+    with pytest.raises(IntegrationError) as caught:
+        adb.pull_latest_file(phone_config(), ["/sdcard/a"], tmp_path)
+    assert "Platform Tools" in caught.value.user_action
+
+
+# ------------------------------------------------------------------ tools
+def test_read_call_log_tool_reports_calls(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    call = adb.Call(number="+91900", name="Mom", call_type="missed",
+                     when=datetime.now(), duration_seconds=0)
+    monkeypatch.setattr(adb, "calls", lambda cfg, since_minutes, limit: [call])
+
+    result = registry.get_record("read_call_log").raw_fn()
+
+    assert "Mom" in result
+
+
+def test_open_link_on_phone_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "open_url", lambda cfg, url: None)
+
+    result = registry.get_record("open_link_on_phone").raw_fn(url="https://example.com")
+
+    assert "phone" in result.lower()
+
+
+def test_open_link_on_phone_tool_reports_the_error_speakably(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    def boom(cfg, url):
+        raise IntegrationError("bad url", service="phone",
+                               user_action="Use an http(s) link.")
+
+    monkeypatch.setattr(adb, "open_url", boom)
+
+    result = registry.get_record("open_link_on_phone").raw_fn(url="intent://x")
+
+    assert "http(s) link" in result
+
+
+def test_save_phone_screenshot_tool_reports_the_saved_filename(container, monkeypatch, tmp_path):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    monkeypatch.setattr(
+        adb, "pull_latest_file", lambda cfg, dirs, local_dir: tmp_path / "shot.png"
+    )
+
+    result = registry.get_record("save_phone_screenshot").raw_fn()
+
+    assert "shot.png" in result
+
+
+def test_read_phone_screen_tool_uses_the_vision_pipeline(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+    from peter.llm import vision
+
+    monkeypatch.setattr(adb, "screenshot_bytes", lambda cfg: b"\x89PNGdata")
+    monkeypatch.setattr(vision, "describe_image", lambda path, question, config: "a lock screen")
+
+    result = registry.get_record("read_phone_screen").raw_fn(question="what's on screen")
+
+    assert result == "a lock screen"
+
+
+def test_read_phone_screen_tool_reports_a_disconnected_phone_speakably(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.tools import phone_tools  # noqa: F401
+
+    def boom(cfg):
+        raise IntegrationError("no device", service="phone",
+                               user_action="Connect the phone by USB.")
+
+    monkeypatch.setattr(adb, "screenshot_bytes", boom)
+
+    result = registry.get_record("read_phone_screen").raw_fn()
+
+    assert "Connect the phone by USB" in result

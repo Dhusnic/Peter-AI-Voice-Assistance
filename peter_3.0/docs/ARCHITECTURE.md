@@ -531,7 +531,7 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **110 tools currently registered**, split by permission tier:
+- **114 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
@@ -552,8 +552,8 @@ flowchart LR
 | `recorder_tools.py` | 4 | 3 | record, transcribe, summarise, read back |
 | `dev_tools.py` | 7 | 0 | git, PRs, CI, work log, standup |
 | `telegram_tools.py` | 1 | 1 | send to your phone, bridge status |
-| `phone_tools.py` | 3 | 0 | read SMS, latest one-time code, phone status |
-| **Total** | **58** | **52** | |
+| `phone_tools.py` | 5 | 2 | SMS, one-time code, call log, phone screen, phone status / open a link on the phone, save a phone screenshot |
+| **Total** | **60** | **54** | |
 
   Six of the write-tier tools are pulled back to *confirm* by standing rules in
   `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
@@ -1222,11 +1222,22 @@ cited answer. Keeping them separate is what keeps the cheap one cheap.
 
 ---
 
-### 2.15 The phone — `peter/integrations/phone/adb.py`
+### 2.15 The phone — `peter/integrations/phone/adb.py`, `peter/tools/phone_tools.py`
 
 Windows has no API into your handset's messages; Phone Link is closed. The two
 routes that work are a companion app you write, or ADB, which most developer
-machines already have. ADB, and read-only.
+machines already have.
+
+Seven tools, five `read` and two `write`. Reading is unrestricted: SMS
+(`read_sms`, `latest_code`), the call log (`read_call_log`), and — once a
+phone was actually connected and it became worth asking "what else can this
+do" — the screen itself (`read_phone_screen`, a screenshot piped straight
+into the same vision pipeline §2.4 already built for the desktop screen, good
+for reading a QR code or checking what an app is showing). Acting stays
+deliberately narrow, on purpose: `open_link_on_phone` can only open a web
+page, never send a message or place a call, and `save_phone_screenshot` can
+only copy a file that already exists on the phone. There is still no path
+from Peter to sending a text or making a call as you.
 
 Two parsing details carry all the risk. `adb shell` hands its argument to the
 *phone's* shell, which re-splits it — so the device-side command is built as one
@@ -1234,12 +1245,27 @@ string, since passing `--where` and `date>123` as separate argv entries arrives
 as two words and fails with an error mentioning neither. And `content query`
 output has no escaping, so fields are split on the *next field name* via
 lookahead rather than on `", "`, which appears freely inside real message
-bodies.
+bodies. Call log rows and the contacts table parse the same way.
+
+**Contact names are resolved, not stored.** `read_sms` and `read_call_log`
+label a sender or caller with a name from `content://com.android.contacts`
+when one matches — normalising both sides to the last 10 digits so "+91
+90000 00000", "090000-00000" and a plain contacts entry all line up
+regardless of formatting. The lookup is best-effort and cached in-process for
+ten minutes per (adb path, device serial): a phone with contacts read
+blocked, or none saved, degrades to showing the raw number rather than
+failing SMS or call log reading, which do not depend on it succeeding.
 
 `latest_code` prefers a message that says it is a code over a bare number,
 because the first number in an SMS is very often an order id or an amount. The
 code is then read out digit by digit — a speech engine given "123456" says "one
 hundred and twenty-three thousand…".
+
+`screenshot_bytes()` is the one function here that does not go through the
+shared `_run()` helper: `_run` runs adb in text mode, which on Windows
+rewrites line endings and would corrupt a binary PNG capture. It shells out
+separately with `exec-out screencap -p`, in binary mode, and does its own
+error handling instead.
 
 **`adb_path` is resolved against the project root, not left to depend on the
 process's working directory — a real bug, found by actually running it.**
@@ -1259,6 +1285,12 @@ the repo root.
 This is the honest end of the payment story from §2.6: Peter can walk a checkout
 to the payment screen but can never complete it, and reading the OTP aloud so
 you can type it is exactly as far as automation should reach into that.
+`open_link_on_phone` closes the other half of the hand-off — it can put the
+checkout page itself on your screen, not just tell you a code — but the tap
+that finishes the payment is still always yours; the tool only ever opens a
+plain `http(s)` URL, rejecting `intent://`/`market://`-style schemes that
+`am start -d` would otherwise also accept and that could launch an arbitrary
+app component instead of a web page.
 
 ---
 
@@ -1362,7 +1394,7 @@ peter_3.0/
 │   │   ├── browser/              # §2.6 Playwright + purchase interlock
 │   │   ├── telegram/             # §2.11 Bot API over urllib, push()
 │   │   ├── dev/                  # §2.13 git + gh, both as subprocesses
-│   │   ├── phone/                # §2.15 ADB: devices, SMS, one-time codes
+│   │   ├── phone/                # §2.15 ADB: SMS, calls, contacts, screen, files
 │   │   └── desktop/              # §2.6b apps, bookmarks, YouTube, media, folders
 │   │       ├── browsers.py        # open_url + bookmark reading (Firefox/Chromium)
 │   │       ├── matching.py        # fuzzy rank() for "open the staging dashboard"
