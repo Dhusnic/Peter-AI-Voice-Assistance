@@ -465,15 +465,16 @@ sequenceDiagram
     participant Svc as Services / Memory
 
     U->>B: "remind me to call mom at 6"
-    B->>B: build user turn:\n<now>...</now> + relevant memory + your text
+    B->>B: build user turn: now + relevant memory + your text
     B->>L: run_turn(provider, tools, user_text, execute=Brain._execute)
-    L->>P: add_user(text); complete(tools)
+    L->>P: add_user(text) + complete(tools)
     P-->>L: response: tool_calls=[set_reminder(...)]
+
     loop for each tool call
         L->>B: execute(call)
         B->>R: registry.get_record("set_reminder")
         R->>G: gate.check(tool="set_reminder", tier="write")
-        G-->>U: "Set a reminder for 6pm to call mom — ok?"
+        G-->>U: "Set a reminder for 6pm to call mom - ok?"
         U-->>G: yes
         G->>Svc: scheduler.add_once(...)
         Svc-->>G: job id
@@ -481,8 +482,9 @@ sequenceDiagram
         R-->>B: "Reminder set for 6:00 PM."
         B-->>L: ToolResult(content="Reminder set for 6:00 PM.")
     end
-    L->>P: add_tool_results([...]); complete(tools)
-    P-->>L: response: text="Done — I'll remind you at six."
+
+    L->>P: add_tool_results([...]) + complete(tools)
+    P-->>L: response: text="Done - I'll remind you at six."
     L-->>B: TurnResult(text, tool_calls, stop_reason)
     B-->>U: speaks the reply
 ```
@@ -650,14 +652,14 @@ understand, and call — for all three vendors, from one definition.
 
 ```mermaid
 flowchart LR
-    Fn["def set_reminder(text: str, at_iso: str) -> str:\n    '''docstring the model reads'''"]
-    Deco["@peter_tool(tier='write')"]
-    Fn --> Deco
-    Deco --> Wrapped["ToolRecord\n(sdk_tool, tier, name)"]
-    Wrapped --> Schema["ToolSpec\n(name, description, JSON-Schema parameters)\nvia Anthropic beta_tool inference"]
-    Schema --> A2[Anthropic tools=[...]]
-    Schema --> O2["OpenAI tools=[...] (parameters key)"]
-    Schema --> G2["Gemini function_declarations=[...] (parameters_json_schema)"]
+  Fn["def set_reminder(text: str, at_iso: str) -> str:<br/>'''docstring the model reads'''"]
+  Deco["@peter_tool(tier='write')"]
+  Fn --> Deco
+  Deco --> Wrapped["ToolRecord<br/>(sdk_tool, tier, name)"]
+  Wrapped --> Schema["ToolSpec<br/>(name, description, JSON-Schema parameters)<br/>via Anthropic beta_tool inference"]
+  Schema --> A2["Anthropic tools=[...]"]
+  Schema --> O2["OpenAI tools=[...]<br/>(parameters key)"]
+  Schema --> G2["Gemini function_declarations=[...]<br/>(parameters_json_schema)"]
 ```
 
 - **One decorator, three vendors.** `@peter_tool(tier=...)` wraps the
@@ -1147,25 +1149,26 @@ something.
 
 ```mermaid
 flowchart TD
-    subgraph MP["Meeting prep — poll every lead_minutes/2"]
-        MPoll["check_meeting_prep()\nlist_events(now, now+lead_minutes)"] --> MDedup{"event.id already\nannounced?"}
-        MDedup -->|no| MNote["memory.related_note(summary + attendees)"]
-        MNote --> MSpeak["say(...) + toast"]
-        MDedup -->|yes| MSkip[skip]
+
+    subgraph MP[Meeting Prep]
+        MPoll[Check meeting prep] --> MDedup{Event already announced}
+        MDedup -->|No| MNote[Get related memory note]
+        MNote --> MSpeak[Speak and show toast]
+        MDedup -->|Yes| MSkip[Skip]
     end
 
-    subgraph ID["Inbox digest — poll every poll_interval_minutes"]
-        IPoll["check_inbox_digest()\ncount_unread() + list_messages(UNSEEN)"] --> IClassify["one-shot model call:\nsender/subject list -> which need a reply"]
-        IClassify --> IChanged{"unread count changed\nsince last announcement?"}
-        IChanged -->|yes| ISpeak["say(...) + toast"]
-        IChanged -->|no| ISkip[skip — do not nag]
+    subgraph ID[Inbox Digest]
+        IPoll[Check inbox digest] --> IClassify[Model checks sender and subject]
+        IClassify --> IChanged{Unread count changed}
+        IChanged -->|Yes| ISpeak[Speak and show toast]
+        IChanged -->|No| ISkip[Skip]
     end
 
-    subgraph FM["Focus mode — on demand"]
-        FStart["start_focus_session(minutes, label)"] --> FMute["volume.get() -> mute to 0"]
-        FMute --> FSchedule["scheduler.add_one_off_job\nargs=[previous_volume, label, started_at]"]
-        FSchedule -->|timer fires, even after a restart| FRestore["complete_focus_session()\nrestore volume + log episode + say(...)"]
-        FStart -.->|or end_focus_session()| FRestore
+    subgraph FM[Focus Mode]
+        FStart[Start focus session] --> FMute[Get volume and mute]
+        FMute --> FSchedule[Schedule restore job]
+        FSchedule -->|Timer fires| FRestore[Restore volume and log episode]
+        FStart -.->|End focus manually| FRestore
     end
 ```
 
