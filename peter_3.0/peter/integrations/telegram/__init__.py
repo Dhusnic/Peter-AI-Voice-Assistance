@@ -34,7 +34,7 @@ def client(config):
     global _client
     with _client_lock:
         if _client is None:
-            from peter.integrations.telegram.client import TelegramClient
+            from peter.integrations.telegram.api import TelegramClient
 
             cfg = config.integrations.telegram
             _client = TelegramClient(

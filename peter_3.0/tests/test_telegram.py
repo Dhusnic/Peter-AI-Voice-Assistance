@@ -11,7 +11,7 @@ import pytest
 
 from peter.core.errors import AuthError, IntegrationError
 from peter.integrations import telegram
-from peter.integrations.telegram.client import TelegramClient, Update
+from peter.integrations.telegram.api import TelegramClient, Update
 from peter.telegram_bridge import (
     RemoteConfirmer,
     TelegramBridge,
@@ -122,6 +122,30 @@ def test_a_message_with_no_text_is_still_acknowledged(monkeypatch):
 
     assert updates[0].update_id == 9
     assert updates[0].text == ""
+
+
+# --------------------------------------------------------- the client() accessor
+def test_client_stays_callable_across_repeated_calls(container):
+    """Regression test for a real shipped bug: peter.integrations.telegram
+    defines a function `client()`, and the package also has a submodule
+    `api.py` (formerly named `client.py`, which collided). Importing that
+    submodule from inside the function makes Python bind the submodule onto
+    the *package's own namespace* under the submodule's name — if that name
+    were still `client`, it would silently overwrite the function, and the
+    second-ever call to `telegram.client(config)` would raise
+    "'module' object is not callable" instead of building a client.
+
+    This must go through the real, unpatched code path — monkeypatching
+    `telegram.client` (as most other tests here do, for speed) replaces the
+    exact attribute this bug corrupts, which is why those tests never caught
+    it even though the collision shipped."""
+    allow(container.config)
+
+    first = telegram.client(container.config)
+    second = telegram.client(container.config)
+
+    assert callable(telegram.client)
+    assert first is second  # also: built once, reused
 
 
 # ------------------------------------------------------------------- push
