@@ -522,6 +522,15 @@ integrations:
       - "/sdcard/Pictures/Screenshots"
       - "/sdcard/DCIM/Screenshots"
     spotify_package: "com.spotify.music"
+    # "<ip>:<port>" for ADB over Wi-Fi, once paired — Settings -> Developer
+    # options -> Wireless debugging -> pair, then the address it shows on
+    # the main Wireless debugging screen (a different one than the pairing
+    # screen). Empty means USB-only. With this set, every phone command
+    # retries once through `adb connect` if the device turns out to be
+    # disconnected, instead of failing until you re-run `adb connect` by
+    # hand — a wireless session doesn't survive the phone leaving Wi-Fi, a
+    # reboot, or wireless debugging being toggled off and on.
+    wireless_address: ""
 
   # ------------------------------------------------------------------- docs
   # Full-text search over folders you point Peter at, and answers built from

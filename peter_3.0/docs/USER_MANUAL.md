@@ -723,6 +723,41 @@ install on the phone. Two things worth knowing:
       adb_path: "./mobile dev/platform-tools/adb.exe"
   ```
 
+**Going wireless — no cable needed after this one-time setup:**
+
+1. On the phone: Settings → Developer options → **Wireless debugging** → on.
+2. Tap **"Wireless debugging"** itself (not just the toggle) → **"Pair
+   device with pairing code"**. It shows a 6-digit code and a pairing
+   `ip:port` (different from the one you'll use to connect).
+3. On the PC, pair once:
+   ```
+   adb pair <pairing-ip>:<pairing-port>
+   ```
+   (enter the 6-digit code when prompted)
+4. Go back to the main Wireless debugging screen — it shows a **different**
+   `ip:port`, the connect address. Connect once:
+   ```
+   adb connect <connect-ip>:<connect-port>
+   ```
+5. Save that same connect address in `config/config.yml`:
+   ```yaml
+   integrations:
+     phone:
+       wireless_address: "<connect-ip>:<connect-port>"
+   ```
+6. Unplug the cable and check: `--health` should still say
+   `phone  ok - 1 device(s)`.
+
+With `wireless_address` set, Peter retries once through `adb connect`
+whenever it finds the phone disconnected — a wireless session doesn't
+survive the phone leaving Wi-Fi, a reboot on either side, or wireless
+debugging being toggled off and on, and this closes that gap automatically
+rather than needing `adb connect` re-run by hand each time. **One thing that
+can still break it:** the phone's IP can change if your router reassigns it.
+If `--health` starts saying "no device attached" again, check whether the
+phone's IP moved (Settings → About → Status) and update `wireless_address`
+— or set a DHCP reservation on your router so it never changes.
+
 <a name="76-documents"></a>
 ### 7.6 Documents — 1 minute
 
@@ -897,6 +932,16 @@ Run `gh auth login`. Peter does not manage GitHub credentials.
 `--health` distinguishes "adb not installed", "no device attached", and
 "attached but not ready" (which means you have not accepted the USB debugging
 prompt on the handset).
+
+**Wireless ADB stopped working after it was fine earlier**
+With `wireless_address` set, Peter already retries once through `adb
+connect` automatically before giving up — so if it's still failing after
+that, the address itself is probably stale. Most likely cause: the phone's
+IP changed (routers reassign IPs unless you've set a reservation). Check
+Settings → About → Status on the phone and update
+`integrations.phone.wireless_address` if it moved. Less commonly: wireless
+debugging got toggled off (some phones turn it off on reboot) — turn it back
+on, no need to re-pair, just `adb connect` once more.
 
 **"stop the alarm" says it failed**
 Support for `DISMISS_ALARM` depends on the phone's default clock app; Google

@@ -22,6 +22,7 @@ def phone_config(**kwargs):
         otp_window_minutes=10, timeout_seconds=5.0,
         pull_dirs=["/sdcard/Pictures/Screenshots", "/sdcard/DCIM/Screenshots"],
         spotify_package="com.spotify.music",
+        wireless_address="",
     )
     base.update(kwargs)
     return SimpleNamespace(**base)
@@ -277,6 +278,131 @@ def test_a_timeout_is_recoverable(monkeypatch):
     with pytest.raises(IntegrationError) as caught:
         adb.messages(phone_config())
     assert caught.value.recoverable is True
+
+
+# ------------------------------------------------------ wireless auto-reconnect
+def test_looks_disconnected_matches_a_missing_device():
+    assert adb._looks_disconnected("error: no devices/emulators found")
+    assert adb._looks_disconnected("error: device offline")
+
+
+def test_looks_disconnected_does_not_match_unauthorized():
+    """The device is attached, just waiting on the USB-debugging prompt —
+    reconnecting cannot fix that, so it must not trigger a retry."""
+    assert not adb._looks_disconnected("error: device unauthorized")
+
+
+def test_connect_wireless_does_nothing_with_no_address_configured(monkeypatch):
+    """No subprocess call at all when wireless_address is empty — the USB-only
+    path must not pay any cost for a feature it doesn't use."""
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(1))
+
+    assert adb._connect_wireless(phone_config(wireless_address="")) is False
+    assert calls == []
+
+
+def test_connect_wireless_reports_success(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda args, **k: SimpleNamespace(
+        returncode=0, stdout="connected to 192.168.1.5:5555", stderr=""))
+
+    assert adb._connect_wireless(phone_config(wireless_address="192.168.1.5:5555")) is True
+
+
+def test_connect_wireless_reports_failure(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda args, **k: SimpleNamespace(
+        returncode=1, stdout="", stderr="failed to connect to 192.168.1.5:5555"))
+
+    assert adb._connect_wireless(phone_config(wireless_address="192.168.1.5:5555")) is False
+
+
+def test_connect_wireless_survives_a_timeout(monkeypatch):
+    def timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="adb", timeout=10)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+
+    assert adb._connect_wireless(phone_config(wireless_address="192.168.1.5:5555")) is False
+
+
+def test_run_retries_once_through_reconnect_and_succeeds(monkeypatch):
+    """The actual point of the feature: a dropped session self-heals on the
+    next command instead of failing until someone runs `adb connect` by
+    hand."""
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[:2] == ["adb", "connect"]:
+            return SimpleNamespace(returncode=0, stdout="connected to X", stderr="")
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=1, stdout="", stderr="error: no devices/emulators found")
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+    result = adb._run(["shell", "echo hi"], phone_config(wireless_address="192.168.1.5:5555"))
+
+    assert result == "ok\n"
+    assert calls[1][:2] == ["adb", "connect"]  # the reconnect actually happened
+
+
+def test_run_gives_up_when_reconnect_also_fails(monkeypatch):
+    def run(args, **kwargs):
+        if args[:2] == ["adb", "connect"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="failed to connect")
+        return SimpleNamespace(returncode=1, stdout="", stderr="error: no devices/emulators found")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+    with pytest.raises(IntegrationError):
+        adb._run(["shell", "echo hi"], phone_config(wireless_address="192.168.1.5:5555"))
+
+
+def test_run_does_not_attempt_reconnect_without_a_configured_address(monkeypatch):
+    """Regression guard: USB-only setups (the default) must behave exactly as
+    before — one failed call, one error, no second subprocess call."""
+    calls = fake_adb(monkeypatch, output="", returncode=1,
+                      stderr="error: no devices/emulators found")
+
+    with pytest.raises(IntegrationError):
+        adb._run(["shell", "echo hi"], phone_config(wireless_address=""))
+
+    assert len(calls) == 1  # no reconnect attempt made
+
+
+def test_run_does_not_retry_a_non_disconnection_failure(monkeypatch):
+    """An unauthorized device, or any other real failure, must not trigger a
+    pointless reconnect attempt."""
+    calls = fake_adb(monkeypatch, output="", returncode=1,
+                      stderr="error: device unauthorized")
+
+    with pytest.raises(IntegrationError):
+        adb._run(["shell", "echo hi"], phone_config(wireless_address="192.168.1.5:5555"))
+
+    assert len(calls) == 1
+
+
+def test_screenshot_bytes_retries_through_reconnect(monkeypatch):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[:2] == ["adb", "connect"]:
+            return SimpleNamespace(returncode=0, stdout="connected to X", stderr="")
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=1, stdout=b"",
+                                    stderr=b"error: no devices/emulators found")
+        return SimpleNamespace(returncode=0, stdout=b"\x89PNGdata", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+    result = adb.screenshot_bytes(phone_config(wireless_address="192.168.1.5:5555"))
+
+    assert result == b"\x89PNGdata"
 
 
 # ------------------------------------------------------------------ battery

@@ -191,6 +191,39 @@ def available(cfg) -> bool:
     return shutil.which(_resolved_adb_path(cfg)) is not None
 
 
+def _looks_disconnected(output: str) -> bool:
+    """True for "nothing to talk to", not for "talking to it failed" —
+    "unauthorized" deliberately doesn't match: the device is attached, just
+    waiting on the USB-debugging prompt, which reconnecting cannot fix."""
+    lowered = output.lower()
+    return (
+        "no devices" in lowered
+        or "device not found" in lowered
+        or "device offline" in lowered
+    )
+
+
+def _connect_wireless(cfg) -> bool:
+    """Best-effort `adb connect <wireless_address>`.
+
+    Never raises: a failed reconnect attempt should fall through to the
+    original error from whatever command triggered it, not replace it with a
+    more confusing one about the reconnect itself.
+    """
+    address = (cfg.wireless_address or "").strip()
+    if not address:
+        return False
+    try:
+        result = subprocess.run(
+            [_resolved_adb_path(cfg), "connect", address],
+            capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace",
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0 and "connected to" in result.stdout.lower()
+
+
 def _contacts_cache(cfg) -> dict[str, tuple[str, str]]:
     """Normalized number -> (display name, number as the contacts app has it
     saved), for labelling SMS senders and call log entries, and for looking
@@ -277,8 +310,25 @@ def find_contact(cfg, name: str) -> list[tuple[str, str]]:
     return list(dict.fromkeys(token_matches))
 
 
+def _exec(args: list[str], cfg, timeout: float | None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        args, capture_output=True, text=True,
+        timeout=timeout or cfg.timeout_seconds,
+        encoding="utf-8", errors="replace",
+    )
+
+
 def _run(device_command: list[str], cfg, timeout: float | None = None) -> str:
-    """Run one adb command, with the configured device selected."""
+    """Run one adb command, with the configured device selected.
+
+    If `integrations.phone.wireless_address` is set and the device turns out
+    to be disconnected, this retries once through `adb connect` before
+    giving up. A wireless ADB session does not survive the phone leaving and
+    rejoining Wi-Fi, a reboot on either side, or wireless debugging itself
+    being toggled off and on — without this, every one of those would need
+    `adb connect` re-run by hand before the next command, which defeats the
+    point of not needing the cable at all.
+    """
     if not available(cfg):
         raise IntegrationError(
             "adb is not installed, or not on PATH", service="phone",
@@ -294,11 +344,7 @@ def _run(device_command: list[str], cfg, timeout: float | None = None) -> str:
     args += device_command
 
     try:
-        result = subprocess.run(
-            args, capture_output=True, text=True,
-            timeout=timeout or cfg.timeout_seconds,
-            encoding="utf-8", errors="replace",
-        )
+        result = _exec(args, cfg, timeout)
     except subprocess.TimeoutExpired as exc:
         raise IntegrationError(
             "the phone did not answer in time", service="phone", recoverable=True
@@ -307,6 +353,14 @@ def _run(device_command: list[str], cfg, timeout: float | None = None) -> str:
         raise IntegrationError(f"could not run adb: {exc}", service="phone") from exc
 
     output = (result.stdout or "") + (result.stderr or "")
+    if (result.returncode != 0 or "error:" in output.lower()) and _looks_disconnected(output):
+        if _connect_wireless(cfg):
+            try:
+                result = _exec(args, cfg, timeout)
+                output = (result.stdout or "") + (result.stderr or "")
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
     if result.returncode != 0 or "error:" in output.lower():
         raise IntegrationError(
             f"adb failed: {output.strip()[:200]}", service="phone",
@@ -466,8 +520,16 @@ def screenshot_bytes(cfg) -> bytes:
     except OSError as exc:
         raise IntegrationError(f"could not run adb: {exc}", service="phone") from exc
 
+    stderr = result.stderr.decode("utf-8", "replace")
+    if (result.returncode != 0 or not result.stdout) and _looks_disconnected(stderr):
+        if _connect_wireless(cfg):
+            try:
+                result = subprocess.run(args, capture_output=True, timeout=cfg.timeout_seconds)
+                stderr = result.stderr.decode("utf-8", "replace")
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
     if result.returncode != 0 or not result.stdout:
-        stderr = result.stderr.decode("utf-8", "replace")
         raise IntegrationError(
             f"could not capture the phone screen: {stderr.strip()[:200]}",
             service="phone", user_action=_hint(stderr),
@@ -617,7 +679,16 @@ def _list_remote(cfg, remote_dir: str) -> list[str]:
     except (subprocess.TimeoutExpired, OSError):
         return []
     if result.returncode != 0:
-        return []
+        if _looks_disconnected(result.stderr) and _connect_wireless(cfg):
+            try:
+                result = subprocess.run(
+                    args, capture_output=True, text=True, timeout=cfg.timeout_seconds,
+                    encoding="utf-8", errors="replace",
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                return []
+        if result.returncode != 0:
+            return []
     return [name.strip() for name in result.stdout.splitlines() if name.strip()]
 
 

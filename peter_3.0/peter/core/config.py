@@ -580,6 +580,16 @@ class PhoneConfig(BaseModel):
     # Package name Spotify controls (play_music_on_phone) launch by. Only
     # matters if you side-load a differently-packaged build.
     spotify_package: str = "com.spotify.music"
+    # "<ip>:<port>" for ADB over Wi-Fi (Settings -> Developer options ->
+    # Wireless debugging -> pair once, note the address it then shows).
+    # Empty means USB-only. A wireless ADB session does not survive the
+    # phone leaving and rejoining Wi-Fi, a reboot on either side, or
+    # wireless debugging itself being toggled off and on — with this set,
+    # every phone command retries once through `adb connect` if the device
+    # turns out to be disconnected, instead of failing until you re-run
+    # `adb connect` by hand. The IP can change if your router doesn't keep
+    # it fixed; a DHCP reservation on the router avoids that.
+    wireless_address: str = ""
 
 
 class DocsConfig(BaseModel):

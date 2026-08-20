@@ -1314,6 +1314,23 @@ rewrites line endings and would corrupt a binary PNG capture. It shells out
 separately with `exec-out screencap -p`, in binary mode, and does its own
 error handling instead.
 
+**Wireless ADB self-heals instead of needing `adb connect` re-run by hand.**
+`integrations.phone.wireless_address` ("`<ip>:<port>`", set once after
+pairing via Settings → Developer options → Wireless debugging) is USB's
+alternative: no cable, but the session is far less durable than USB's —
+it doesn't survive the phone leaving and rejoining Wi-Fi, a reboot on either
+side, or wireless debugging itself being toggled off and on. Without
+handling that, every one of those would silently turn "the phone is
+connected" into "run `adb connect` by hand before the next command works,"
+which defeats the point of not needing the cable. `_run()` (and,
+separately, `screenshot_bytes()` and `_list_remote()`, which bypass `_run()`
+for their own reasons) now catch specifically a "no device"/"device
+offline" failure — never "unauthorized," which reconnecting cannot fix —
+and retry exactly once through `adb connect <wireless_address>` before
+raising. USB-only setups (`wireless_address` empty, the default) pay
+nothing for this: the check is a single string test before any subprocess
+call, not a proactive `adb devices` poll on every command.
+
 **Calls, media, and alarms — real device control, not just reading.**
 `make_phone_call` / `call_contact` / `answer_phone_call` / `hang_up_phone_call`
 go through the standard `ACTION_CALL` intent and the
