@@ -157,6 +157,27 @@ flowchart LR
         CO3["Optional daily cap: warn or block"]
     end
 
+    subgraph SG_RT["Routines"]
+        direction TB
+        RT1["Named chains of Peter's own tools, run as one command"]
+        RT2["Defined by hand in config.yml — no confirmation per step"]
+        RT3["One failed step reported, the rest still run"]
+    end
+
+    subgraph SG_NW["News"]
+        direction TB
+        NW1["Top headlines, free, no API key"]
+        NW2["Search a topic, or general top stories"]
+        NW3["Opt-in to the morning briefing"]
+    end
+
+    subgraph SG_NT["Notes"]
+        direction TB
+        NT1["Quick timestamped journal entries"]
+        NT2["Full-text search over past notes"]
+        NT3["Never injected automatically, only recalled when asked"]
+    end
+
     P --> SG_V
     P --> SG_S
     P --> SG_T
@@ -173,6 +194,9 @@ flowchart LR
     P --> SG_D
     P --> SG_DOC
     P --> SG_CO
+    P --> SG_RT
+    P --> SG_NW
+    P --> SG_NT
 ```
 
 ### 1.2 What each area means in practice
@@ -197,6 +221,9 @@ flowchart LR
 | **Cost** | "How much have I spent this week?" | Every turn is appended to a ledger, derived by subtracting cumulative counters. Stored in USD (what vendors bill in), displayed in rupees — storing the converted figure would freeze each day's exchange rate into history. An optional daily cap warns or blocks, checked *before* a turn, since that is the only moment it can stop anything — see §2.17. |
 | **Expenses & deliveries** | "Scan my bank texts" / "what did I spend on food" / "what's still on the way" | Bank/UPI and courier SMS parsed heuristically into two small ledgers, reusing the same SMS-reading pipeline §2.15 built for OTPs. On-demand only, no background sweep — see §2.18. |
 | **Weather** | "What's the weather" / "weather in Mumbai" | Open-Meteo — free, no API key. A city name is geocoded once and cached for the session; folds into the morning briefing when added to `briefing.include` — see §2.18. |
+| **Routines** | "Run my good night routine" | A named chain of Peter's own tools, defined by hand in `config.yml` and run as one command with no per-step confirmation — see §2.19. |
+| **News** | "What's in the news today" / "news about cricket" | Google News' public RSS feed — free, no API key. Folds into the morning briefing the same way weather does — see §2.19. |
+| **Notes** | "Note that the client wants the demo moved to Friday" | A timestamped, full-text-searchable journal, kept deliberately separate from memory's facts and preferences — see §2.19. |
 
 ### 1.3 What is deliberately **not** built yet
 
@@ -533,7 +560,7 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **129 tools currently registered**, split by permission tier:
+- **136 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
@@ -558,7 +585,10 @@ flowchart LR
 | `expense_tools.py` | 1 | 1 | scan bank/UPI SMS, report spending |
 | `delivery_tools.py` | 1 | 1 | scan courier SMS, list pending shipments |
 | `weather_tools.py` | 1 | 0 | current weather (Open-Meteo, no key needed) |
-| **Total** | **63** | **66** | |
+| `routine_tools.py` | 1 | 1 | run / list config-defined tool chains |
+| `news_tools.py` | 1 | 0 | top headlines (Google News RSS, no key needed) |
+| `notes_tools.py` | 2 | 2 | add/search/list/delete quick journal notes |
+| **Total** | **67** | **69** | |
 
   Seven of the write-tier tools are pulled back to *confirm* by standing rules
   in `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
@@ -1548,6 +1578,68 @@ faster-whisper — no meeting-specific logic in the function itself). The
 whole tool is two existing calls in sequence with error handling around
 each; the only genuinely new surface is the `voice_note_dirs` config list.
 
+### 2.19 Non-mobile horizontal additions — `peter/routines.py`, `peter/integrations/news.py`, `peter/notes.py`
+
+Three more features added the same way as §2.18, but deliberately picked to
+need *nothing* mobile-related — the previous pass leaned entirely on the
+phone/SMS pipeline, so this one adds breadth to the rest of the assistant
+instead.
+
+**Routines are pure orchestration — zero new integrations, zero new
+credentials.** A routine is a named list of steps in `config.yml`
+(`integrations.routines.defs`), each step naming an existing registered tool
+and its arguments; "run my good night routine" then runs, say,
+`pause_music_on_phone` followed by `lock_workstation` as one spoken
+instruction instead of two or three. `routines.run()` calls each step's
+`ToolRecord.raw_fn` directly rather than going through `sdk_tool` — the
+`raw_fn` slot registry.py has carried since day one but nothing had used
+until now. That is a deliberate **bypass of the policy gate** for the
+individual steps, which needs its own justification: `run_routine` itself is
+still a normal `write`-tier tool call that passes through the gate once, but
+asking "proceed?" again for every step inside it would defeat the entire
+point of naming a routine. The trust model is the same one
+`policy.standing_rules` already uses — writing the routine into `config.yml`
+by hand *is* the standing instruction, made once, deliberately, not per
+invocation. The one thing this must never allow regardless of that trust is
+an auto-executing spend action, so `routines.run()` refuses any step whose
+tier is `spend` outright — belt-and-braces, since no `spend`-tier tool exists
+anywhere in this codebase today and the interceptor is precisely what keeps
+it that way. A failed step is reported and the rest still run — "3 of 4
+done" beats an all-or-nothing rollback for something this low-stakes. Empty
+by default (`defs: {}`), and the tool group is gated in the registry the same
+way `dev_tools` needs at least one repo configured — an empty routine list
+can only ever say "nothing is configured," so there is no reason to spend
+tokens describing it every turn.
+
+**News reuses the weather module's exact shape, swapping JSON for XML.**
+`peter/integrations/news.py` hits Google News' public RSS feed — no API key,
+no signup, the same reasoning §2.18 gave for choosing Open-Meteo over a
+metered weather API. Unlike weather's geocode, headlines are never cached:
+coordinates for a city are permanent within a process lifetime, but a
+headline is stale within the hour, so every call is a fresh fetch. RSS is
+parsed with the stdlib `xml.etree.ElementTree` rather than adding a
+dependency, consistent with every other integration's stdlib-`urllib`-only
+rule. This is RSS consumption of a feed Google publishes specifically to be
+read this way — not scraping a logged-in surface, so none of §2.6's
+ToS/bot-detection caveats apply. Folded into the briefing
+(`_SECTIONS["news"]`) opt-in via `include`, same machinery as weather.
+
+**Notes are a fourth kind of memory, deliberately kept separate from the
+other three.** `peter/memory/store.py` already holds facts, preferences and
+episodes — but a fact is durable and gets searched and injected into every
+relevant future turn automatically, which is wrong for "note that the client
+wants the demo moved to Friday": a one-off, timestamped entry that should
+only surface when asked. `peter/notes.py` is a new `notes` + `notes_fts`
+FTS5 pair, built on the same `Db` helper `expenses.py`/`deliveries.py` use
+(so it lives in the shared `peter.db`), with the identical
+tokenise-and-OR-query approach `memory/store.py`'s `search_facts` already
+uses to keep free-form speech safe against FTS5's query syntax. Four tools:
+`add_note`, `search_notes`, `recent_notes`, `delete_note` — deliberately not
+folded into `memory_tools.py`, since `remember_fact` and `add_note` answer
+different questions ("what should Peter always know" vs. "what did I say
+that one time") and merging them would blur a distinction worth keeping
+sharp for the model choosing between them.
+
 ---
 
 ## Appendix — file map
@@ -1575,7 +1667,7 @@ peter_3.0/
 │   ├── policy/
 │   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
 │   │   └── audit.py              # append-only JSONL trail
-│   ├── tools/                   # §2.3 the 110 registered tools
+│   ├── tools/                   # §2.3 the 136 registered tools
 │   ├── memory/store.py          # §2.5 SQLite + FTS5
 │   ├── scheduler/jobs.py        # §2.8 APScheduler + SQLite jobstore
 │   ├── meeting_prep.py          # §2.10 calendar + memory nudge
@@ -1592,6 +1684,8 @@ peter_3.0/
 │   ├── spend.py                 # §2.17 the cost ledger and the daily cap
 │   ├── expenses.py               # §2.18 bank/UPI SMS -> personal spend ledger
 │   ├── deliveries.py             # §2.18 courier SMS -> shipment tracker
+│   ├── routines.py               # §2.19 named chains of Peter's own tools
+│   ├── notes.py                  # §2.19 timestamped journal, SQLite + FTS5
 │   ├── ui/
 │   │   ├── progress.py           # §2.9b CLI status line, branded spinners
 │   │   ├── confirm.py            # voice-mode spoken yes/no confirmer
@@ -1604,6 +1698,7 @@ peter_3.0/
 │   │   ├── dev/                  # §2.13 git + gh, both as subprocesses
 │   │   ├── phone/                # §2.15 ADB: SMS, calls, contacts, screen, files
 │   │   ├── weather.py            # §2.18 Open-Meteo, no API key, geocode cache
+│   │   ├── news.py               # §2.19 Google News RSS, no API key
 │   │   └── desktop/              # §2.6b apps, bookmarks, YouTube, media, folders
 │   │       ├── browsers.py        # open_url + bookmark reading (Firefox/Chromium)
 │   │       ├── matching.py        # fuzzy rank() for "open the staging dashboard"

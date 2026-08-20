@@ -117,6 +117,34 @@ def test_weather_section_degrades_gracefully_when_not_configured(briefing_contai
     assert "not set up" in text
 
 
+def test_news_section_appears_when_included_and_configured(briefing_container, monkeypatch):
+    from peter.integrations import news
+
+    wire(briefing_container)
+    briefing_container.config.integrations.briefing.include = ["news"]
+    monkeypatch.setattr(news, "headlines", lambda cfg: "1. Big story (Reuters)")
+
+    text = build_briefing()
+
+    assert "1. Big story (Reuters)" in text
+
+
+def test_news_section_is_skipped_when_switched_off(briefing_container, monkeypatch):
+    from peter.integrations import news
+
+    wire(briefing_container)
+    briefing_container.config.integrations.briefing.include = ["news"]
+    briefing_container.config.integrations.news.enabled = False
+    monkeypatch.setattr(
+        news, "headlines",
+        lambda cfg: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+
+    text = build_briefing()  # must not raise, and must not call headlines()
+
+    assert briefing_container.config.app.user_name in text
+
+
 def test_greeting_matches_the_time_of_day(briefing_container):
     wire(briefing_container)
     text = build_briefing()

@@ -646,6 +646,62 @@ class WeatherConfig(BaseModel):
     timeout_seconds: float = Field(default=10.0, gt=0)
 
 
+class RoutinesConfig(BaseModel):
+    """Named chains of Peter's own tools, run as one voice command.
+
+    Each routine is a list of steps under its name; each step names an
+    existing tool and its arguments. "Good night" as one routine is worth
+    more than the handful of tools it calls put together — orchestration
+    over the existing tool surface, at the cost of zero new integrations.
+    See peter/routines.py.
+
+        routines:
+          defs:
+            good night:
+              - tool: pause_music_on_phone
+                args: {}
+              - tool: lock_workstation
+                args: {}
+
+    A routine's steps run without re-confirming individually, even for a
+    tool normally pulled into policy.standing_rules — writing the routine
+    here by hand **is** the standing instruction, the same trust model
+    standing_rules itself already uses. Spend-tier tools can never appear in
+    a step regardless (there are none registered today; see peter/routines.py).
+    """
+
+    enabled: bool = True
+    defs: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+
+
+class NewsConfig(BaseModel):
+    """Top headlines via Google News' public RSS feed — free, no API key.
+
+    See peter/integrations/news.py. Same rationale as weather: a feed that
+    needs no secret in .env is worth taking over a metered API for something
+    this low-stakes.
+    """
+
+    enabled: bool = True
+    # Empty means general top headlines. A topic/query narrows it, e.g.
+    # "technology" or "Tamil Nadu".
+    topic: str = ""
+    max_items: int = Field(default=5, ge=1, le=20)
+    region: str = "IN"
+    language: str = "en"
+    timeout_seconds: float = Field(default=10.0, gt=0)
+
+
+class NotesConfig(BaseModel):
+    """A personal journal — quick timestamped voice notes. See peter/notes.py.
+
+    Distinct from memory's facts/preferences: a note is never injected into
+    a future turn automatically, only recalled when asked.
+    """
+
+    enabled: bool = True
+
+
 class DocsConfig(BaseModel):
     """Full-text search over folders you point Peter at. See peter/docs_index.py."""
 
@@ -691,6 +747,9 @@ class IntegrationsConfig(BaseModel):
     expenses: ExpenseConfig = Field(default_factory=ExpenseConfig)
     deliveries: DeliveryConfig = Field(default_factory=DeliveryConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
+    routines: RoutinesConfig = Field(default_factory=RoutinesConfig)
+    news: NewsConfig = Field(default_factory=NewsConfig)
+    notes: NotesConfig = Field(default_factory=NotesConfig)
 
 
 # =================================================================== .env

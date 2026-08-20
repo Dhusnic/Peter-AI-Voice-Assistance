@@ -179,6 +179,9 @@ TOOL_MODULES = (
     "peter.tools.expense_tools",
     "peter.tools.delivery_tools",
     "peter.tools.weather_tools",
+    "peter.tools.routine_tools",
+    "peter.tools.news_tools",
+    "peter.tools.notes_tools",
 )
 
 # Modules whose tools cannot possibly succeed without credentials, and the
@@ -221,6 +224,14 @@ _REQUIRES = {
         lambda c: c.integrations.deliveries.enabled and c.integrations.phone.enabled,
     "peter.tools.weather_tools":
         lambda c: c.integrations.weather.enabled,
+    # A routine with no steps configured can only ever say so — same reasoning
+    # as dev_tools needing at least one repo.
+    "peter.tools.routine_tools":
+        lambda c: c.integrations.routines.enabled and bool(c.integrations.routines.defs),
+    "peter.tools.news_tools":
+        lambda c: c.integrations.news.enabled,
+    "peter.tools.notes_tools":
+        lambda c: c.integrations.notes.enabled,
 }
 
 

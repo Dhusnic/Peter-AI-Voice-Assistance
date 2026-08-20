@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from peter.policy.audit import AuditLog
     from peter.deliveries import DeliveryStore
     from peter.expenses import ExpenseStore
+    from peter.notes import NoteStore
     from peter.price_watch import WatchStore
     from peter.scheduler.jobs import Scheduler
     from peter.spend import SpendLog
@@ -66,6 +67,7 @@ class ServiceContainer:
         self._docs: Optional["DocIndex"] = None
         self._expenses: Optional["ExpenseStore"] = None
         self._deliveries: Optional["DeliveryStore"] = None
+        self._notes: Optional["NoteStore"] = None
 
     # ------------------------------------------------------------ eager
     def require_memory(self) -> "MemoryStore":
@@ -191,6 +193,14 @@ class ServiceContainer:
                 self._deliveries = DeliveryStore(self.config.db_path)
         return self._deliveries
 
+    def notes(self) -> "NoteStore":
+        with self._lock:
+            if self._notes is None:
+                from peter.notes import NoteStore
+
+                self._notes = NoteStore(self.config.db_path)
+        return self._notes
+
     def _require_google(self) -> None:
         cfg = self.config.integrations.google
         if not cfg.enabled:
@@ -217,7 +227,7 @@ class ServiceContainer:
             except Exception:
                 log.debug("browser close failed", exc_info=True)
         for store in (self._watches, self._workspaces, self._spend, self._docs,
-                     self._expenses, self._deliveries):
+                     self._expenses, self._deliveries, self._notes):
             if store is not None:
                 try:
                     store.close()

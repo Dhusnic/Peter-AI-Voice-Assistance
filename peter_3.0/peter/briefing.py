@@ -135,6 +135,19 @@ def _weather_section() -> str:
     return weather.current(cfg)
 
 
+def _news_section() -> str:
+    """Top headlines. Opt-in via integrations.briefing.include, same as
+    weather — a briefing that skims the news by default would drown out the
+    calendar and mail this section list started with."""
+    from peter.core.services import services
+    from peter.integrations import news
+
+    cfg = services().config.integrations.news
+    if not cfg.enabled:
+        return ""
+    return news.headlines(cfg)
+
+
 def _prs_section() -> str:
     """Reviews requested of you. Opt-in for the same reason."""
     from peter.core.services import services
@@ -158,6 +171,7 @@ _SECTIONS = {
     "waiting_on": lambda cfg: _waiting_on_section(),
     "pull_requests": lambda cfg: _prs_section(),
     "weather": lambda cfg: _weather_section(),
+    "news": lambda cfg: _news_section(),
 }
 
 

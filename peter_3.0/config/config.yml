@@ -336,7 +336,7 @@ integrations:
     # Daily spoken summary. Set enabled: false to turn it off entirely.
     time: "07:30"
     # Also available: waiting_on, pull_requests, weather (needs
-    # integrations.weather.location or latitude/longitude set below).
+    # integrations.weather.location or latitude/longitude set below), news.
     include:
       - calendar
       - mail
@@ -567,6 +567,43 @@ integrations:
     longitude: 0.0
     units: metric             # metric | imperial
     timeout_seconds: 10
+
+  # ---------------------------------------------------------------- routines
+  # Named chains of Peter's own tools, run as one voice command ("run my good
+  # night routine"). Each step names an existing tool and its arguments — see
+  # peter/routines.py. A routine's own steps do not re-confirm individually,
+  # even for a tool normally pulled into policy.standing_rules above: writing
+  # it here by hand already IS the standing instruction. Empty by default —
+  # the tool group only registers once at least one routine is defined.
+  routines:
+    enabled: true
+    defs: {}
+    #   good night:
+    #     - tool: pause_music_on_phone
+    #       args: {}
+    #     - tool: lock_workstation
+    #       args: {}
+    #   start work:
+    #     - tool: focus_start
+    #       args: { minutes: 90 }
+
+  # -------------------------------------------------------------------- news
+  # Top headlines via Google News' public RSS feed — free, no API key. Add
+  # "news" to briefing.include above to fold it into the morning briefing.
+  news:
+    enabled: true
+    topic: ""                # empty = general top headlines, or e.g. "cricket"
+    max_items: 5
+    region: IN
+    language: en
+    timeout_seconds: 10
+
+  # ------------------------------------------------------------------- notes
+  # A personal journal — quick timestamped notes ("note that ..."), searchable
+  # later. Distinct from memory's facts/preferences: never injected into a
+  # future turn automatically, only recalled when asked. See peter/notes.py.
+  notes:
+    enabled: true
 
   # ------------------------------------------------------------------- docs
   # Full-text search over folders you point Peter at, and answers built from

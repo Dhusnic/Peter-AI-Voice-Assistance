@@ -32,6 +32,9 @@ to do when something is not working. For *how it is built*, see
    - [4.16 Cost and models](#416-cost-and-models)
    - [4.17 Expenses and deliveries](#417-expenses-and-deliveries)
    - [4.18 Weather](#418-weather)
+   - [4.19 Routines](#419-routines)
+   - [4.20 News](#420-news)
+   - [4.21 Notes and journal](#421-notes-and-journal)
 5. [What Peter does without being asked](#5-what-peter-does-without-being-asked)
 6. [Permissions — what stops and asks](#6-permissions)
 7. [Setup guides for each integration](#7-setup-guides)
@@ -588,6 +591,57 @@ changing config.
 Add `weather` to `integrations.briefing.include` to fold it into the
 morning briefing.
 
+<a name="419-routines"></a>
+### 4.19 Routines
+
+*Off until at least one routine is defined. [Setup](#79-routines).*
+
+> **"run my good night routine"**
+> "start work mode"
+> "what routines do I have"
+
+A routine is a named chain of Peter's own tools, defined by hand in
+`config.yml`, run as one spoken instruction:
+
+```yaml
+integrations:
+  routines:
+    defs:
+      good night:
+        - tool: pause_music_on_phone
+          args: {}
+        - tool: lock_workstation
+          args: {}
+```
+
+Every step runs without asking you to confirm it individually — even a step
+that would normally stop and ask (like `lock_workstation`) — because writing
+the routine into `config.yml` by hand already **is** the confirmation, made
+once rather than every time you say the routine's name. If one step fails,
+the rest still run, and Peter tells you which one didn't.
+
+<a name="420-news"></a>
+### 4.20 News
+
+> **"what's in the news today"**
+> "news about cricket"
+
+Top headlines via Google News' public RSS feed — free, no API key. Naming a
+topic narrows it; otherwise it's general top headlines. Add `news` to
+`integrations.briefing.include` to fold it into the morning briefing.
+
+<a name="421-notes"></a>
+### 4.21 Notes and journal
+
+> **"note that the client wants the demo moved to Friday"**
+> "what did I note about the wifi password"
+> "read back my recent notes"
+
+A quick, timestamped journal, distinct from memory ([§4.4](#44-memory)):
+a note is never recalled automatically on a later turn the way a remembered
+fact is — Peter only surfaces one when you search or ask for recent notes.
+Use this for one-off things worth writing down, not standing facts about you.
+
 ---
 
 <a name="5-what-peter-does-without-being-asked"></a>
@@ -622,7 +676,7 @@ they cost extra network calls, so they are opt-in:
 ```yaml
 integrations:
   briefing:
-    include: [calendar, mail, reminders, todos, waiting_on, pull_requests]
+    include: [calendar, mail, reminders, todos, waiting_on, pull_requests, weather, news]
 ```
 
 ---
@@ -859,6 +913,30 @@ integrations:
 Expenses and deliveries need nothing beyond [phone SMS reading](#75-phone-sms-over-adb)
 already being switched on — no separate setup step.
 
+<a name="79-routines"></a>
+### 7.9 Routines — 1 minute
+
+```yaml
+integrations:
+  routines:
+    defs:
+      good night:
+        - tool: pause_music_on_phone
+          args: {}
+        - tool: lock_workstation
+          args: {}
+      start work:
+        - tool: focus_start
+          args: { minutes: 90 }
+```
+
+`tool` must be an existing tool's exact name — see [§9](#9-complete-tool-reference)
+for the full list. `args` are that tool's arguments, `{}` if it takes none.
+No routines are offered at all until at least one is defined here.
+
+News and notes need nothing beyond `integrations.news.enabled` /
+`integrations.notes.enabled`, both `true` by default — no separate setup step.
+
 ---
 
 <a name="8-command-line-reference"></a>
@@ -888,7 +966,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 <a name="9-complete-tool-reference"></a>
 ## 9. Complete tool reference
 
-129 tools. `[r]` read, `[w]` write, `[!]` always confirms.
+136 tools. `[r]` read, `[w]` write, `[!]` always confirms.
 
 **System** — `open_app` [w] · `list_files` [r] · `read_file` [r] ·
 `search_files` [r] · `write_file` [w] · `delete_file` [!] · `move_file` [w] ·
@@ -955,6 +1033,13 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 **Deliveries** — `scan_delivery_sms` [w] · `pending_deliveries` [r]
 
 **Weather** — `get_weather` [r]
+
+**Routines** — `run_routine` [w] · `list_routines` [r]
+
+**News** — `get_news` [r]
+
+**Notes** — `add_note` [w] · `search_notes` [r] · `recent_notes` [r] ·
+`delete_note` [w]
 
 **Desktop** — `open_url` [w] · `open_website` [w] · `open_named_site` [w] ·
 `play_youtube` [w] · `control_playback` [w] · `search_bookmarks` [r] ·
@@ -1070,6 +1155,18 @@ Check the spelling, or be more specific (a well-known city name works best;
 a very small town might not be in Open-Meteo's geocoding data at all — set
 `latitude`/`longitude` directly in that case).
 
+**"there is no routine called ..." even though I configured one**
+Check `integrations.routines.defs` in `config.yml` for a typo in the name, and
+say `list_routines` to hear exactly what's configured. The name match is
+forgiving (spoken variants like "my good night routine" still find "good
+night"), but it still needs some word overlap with the configured name.
+
+**A routine says "not a known tool" for one of its steps**
+The `tool:` value must be the tool's exact registered name (see
+[§9](#9-complete-tool-reference)), and that tool's module must actually be
+loaded — a tool gated behind another integration (e.g. a phone tool with
+`integrations.phone.enabled: false`) will not be found either.
+
 ---
 
 <a name="11-privacy"></a>
@@ -1081,7 +1178,8 @@ What stays on this machine, always:
 - **Meeting audio and transcription.** faster-whisper runs on your CPU. Only the
   final text summary is a model call.
 - **Memory, documents, price watches, workspaces, the spend ledger, the
-  expense and delivery ledgers, the audit log.** All local SQLite in `data/`.
+  expense and delivery ledgers, notes, the audit log.** All local SQLite in
+  `data/`.
 - **Site passwords.** Peter never handles them; you log in by hand and the
   browser profile is reused.
 - **GitHub and phone credentials.** Held by `gh` and by ADB's per-machine
@@ -1100,13 +1198,16 @@ USB/ADB connection between this machine and the handset only — nothing about
 *how* they're sent goes near your LLM provider, only the text of what you
 asked for and Peter's reply.
 
-**Weather is the one feature that talks to a third party other than your LLM
-provider.** A city name (or coordinates) goes to Open-Meteo to look up the
-forecast — no account, no key, and nothing else about you goes with it, but
-it's still a network call to a service that isn't Anthropic/OpenAI/Google.
-Bank/UPI and courier SMS parsed for expenses and deliveries never leave this
-machine at all — the ledger is a local SQLite table, same as everything
-else in that first list.
+**Weather and news are the two features that talk to a third party other than
+your LLM provider.** A city name (or coordinates) goes to Open-Meteo, and a
+topic or a general request goes to Google News' RSS feed — no account, no
+key on either, and nothing else about you goes with the request, but it's
+still a network call to a service that isn't Anthropic/OpenAI/Google.
+Bank/UPI and courier SMS parsed for expenses and deliveries, and everything
+you note down, never leave this machine at all — those are local SQLite
+tables, same as everything else in that first list. A routine never adds a
+network call of its own — it only runs tools that already exist, so its
+privacy profile is exactly the sum of whichever tools you put in it.
 
 What is sent to Telegram, if you enable it: your messages to Peter, Peter's
 replies, and mirrored proactive announcements.
