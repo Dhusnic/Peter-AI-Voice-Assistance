@@ -293,8 +293,20 @@ class GoogleConfig(BaseModel):
 
 class BrowserConfig(BaseModel):
     enabled: bool = True
-    # Headed on purpose: you can see what it is doing and stop it, and headless
-    # Chromium is the loudest automation signal there is.
+    # Which browser engine Playwright drives for the scripted browser tools
+    # (browse_page, check_price, browser_login, ...). This is always a
+    # separate, Peter-owned browser instance with its own profile — never
+    # your actual installed Chrome/Firefox/Edge, and unrelated to
+    # desktop.preferred_browser below, which only affects plain links opened
+    # for you to look at.
+    #   chromium   default. Best-tested against anti-bot detection.
+    #   firefox    Playwright's own bundled Firefox build, not your system one.
+    # Switching this after the profile directory already has data in it will
+    # fail to launch — the two engines' profile formats are incompatible.
+    # Delete profile_dir (or point it elsewhere) after changing this.
+    engine: Literal["chromium", "firefox"] = "chromium"
+    # Headed on purpose: you can see what it is doing and stop it, and a
+    # headless browser is the loudest automation signal there is.
     headless: bool = False
     profile_dir: str = "./data/browser_profile"
     default_timeout_seconds: float = Field(default=30.0, gt=0)

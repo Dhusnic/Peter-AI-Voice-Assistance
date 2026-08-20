@@ -515,3 +515,165 @@ def test_non_rupee_currencies_are_parsed(raw, expected):
     """The regex originally knew only ₹/Rs/INR/$/USD and silently returned
     None for a £ price sitting in plain sight on the page."""
     assert extract.parse_price(raw) == expected
+
+
+# ========================================================= engine selection
+# BrowserManager._ensure_started() launches a real browser and is deliberately
+# untested end-to-end (see the module docstring above) — but which *engine*
+# gets asked for is plain logic, and worth pinning: a Firefox launch call
+# accidentally routed to .chromium would silently ignore the config.yml
+# setting and nobody would notice until a login session mysteriously vanished.
+class _FakeContext:
+    def __init__(self):
+        self.timeout = None
+        self.pages = []
+
+    def set_default_timeout(self, ms):
+        self.timeout = ms
+
+
+class _FakeEngine:
+    def __init__(self, name):
+        self.name = name
+        self.launch_kwargs = None
+
+    def launch_persistent_context(self, **kwargs):
+        self.launch_kwargs = kwargs
+        return _FakeContext()
+
+
+class _FakePlaywright:
+    def __init__(self):
+        self.chromium = _FakeEngine("chromium")
+        self.firefox = _FakeEngine("firefox")
+
+    def start(self):
+        return self
+
+    def stop(self):
+        pass
+
+
+def browser_config(**kwargs):
+    from peter.core.config import BrowserConfig
+
+    return BrowserConfig(**kwargs)
+
+
+def manager_with_fake_playwright(monkeypatch, tmp_path, **config_kwargs):
+    from peter.integrations.browser.manager import BrowserManager
+
+    fake = _FakePlaywright()
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright", lambda: fake
+    )
+    manager = BrowserManager(browser_config(**config_kwargs), tmp_path / "profile")
+    return manager, fake
+
+
+def test_the_default_engine_is_chromium(monkeypatch, tmp_path):
+    manager, fake = manager_with_fake_playwright(monkeypatch, tmp_path)
+
+    manager._ensure_started()
+
+    assert fake.chromium.launch_kwargs is not None
+    assert fake.firefox.launch_kwargs is None
+
+
+def test_firefox_can_be_selected_instead(monkeypatch, tmp_path):
+    manager, fake = manager_with_fake_playwright(monkeypatch, tmp_path, engine="firefox")
+
+    manager._ensure_started()
+
+    assert fake.firefox.launch_kwargs is not None
+    assert fake.chromium.launch_kwargs is None
+
+
+def test_chromium_only_flags_are_not_sent_to_firefox(monkeypatch, tmp_path):
+    """These flags are Chromium CLI syntax; Firefox does not recognise them
+    and passing them fails the launch outright rather than being ignored."""
+    manager, fake = manager_with_fake_playwright(monkeypatch, tmp_path, engine="firefox")
+
+    manager._ensure_started()
+
+    assert fake.firefox.launch_kwargs["args"] == []
+
+
+def test_chromium_keeps_its_anti_detection_flags(monkeypatch, tmp_path):
+    manager, fake = manager_with_fake_playwright(monkeypatch, tmp_path, engine="chromium")
+
+    manager._ensure_started()
+
+    assert "--disable-blink-features=AutomationControlled" in fake.chromium.launch_kwargs["args"]
+
+
+def test_both_engines_get_the_same_profile_and_locale_settings(monkeypatch, tmp_path):
+    """The engine differs; the profile directory, locale and viewport must not."""
+    manager, fake = manager_with_fake_playwright(monkeypatch, tmp_path, engine="firefox")
+
+    manager._ensure_started()
+
+    kwargs = fake.firefox.launch_kwargs
+    assert kwargs["user_data_dir"] == str((tmp_path / "profile").resolve()) or \
+        kwargs["user_data_dir"] == str(tmp_path / "profile")
+    assert kwargs["locale"] == "en-IN"
+    assert kwargs["timezone_id"] == "Asia/Kolkata"
+
+
+def test_an_unknown_engine_value_cannot_reach_the_config_model():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        browser_config(engine="safari")
+
+
+def test_the_install_hint_names_the_configured_engine_when_playwright_missing(
+    monkeypatch, tmp_path
+):
+    import builtins
+
+    from peter.core.errors import IntegrationError
+    from peter.integrations.browser.manager import BrowserManager
+
+    real_import = builtins.__import__
+
+    def no_playwright(name, *args, **kwargs):
+        if name == "playwright.sync_api":
+            raise ImportError("not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_playwright)
+    manager = BrowserManager(browser_config(engine="firefox"), tmp_path / "profile")
+
+    with pytest.raises(IntegrationError) as caught:
+        manager._ensure_started()
+    assert "install firefox" in caught.value.user_action
+
+
+def test_the_launch_failure_hint_mentions_incompatible_profiles(monkeypatch, tmp_path):
+    from peter.core.errors import IntegrationError
+    from peter.integrations.browser.manager import BrowserManager
+
+    class BrokenEngine:
+        def launch_persistent_context(self, **kwargs):
+            raise RuntimeError("profile is not a valid firefox profile")
+
+    class BrokenPlaywright:
+        def __init__(self):
+            self.firefox = BrokenEngine()
+            self.chromium = BrokenEngine()
+
+        def start(self):
+            return self
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright", lambda: BrokenPlaywright()
+    )
+    manager = BrowserManager(browser_config(engine="firefox"), tmp_path / "profile")
+
+    with pytest.raises(IntegrationError) as caught:
+        manager._ensure_started()
+    assert "fresh profile_dir" in caught.value.user_action

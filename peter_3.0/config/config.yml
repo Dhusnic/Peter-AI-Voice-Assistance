@@ -304,8 +304,18 @@ integrations:
 
   browser:
     enabled: true
-    # Headed on purpose. You can see what it is doing and stop it, and headless
-    # Chromium is the loudest automation signal there is.
+    # Which browser Playwright drives for browse_page, check_price,
+    # browser_login and the rest — always a separate, Peter-owned instance
+    # with its own profile below, never your actual installed browser and
+    # unrelated to desktop.preferred_browser above.
+    #   chromium   default. Best-tested against anti-bot detection.
+    #   firefox    Playwright's own bundled Firefox, not your system one.
+    # Run `python -m playwright install firefox` once before switching to it.
+    # Changing this needs a fresh profile_dir — delete the folder below first,
+    # the two engines' profile formats do not carry over.
+    engine: firefox
+    # Headed on purpose. You can see what it is doing and stop it, and a
+    # headless browser is the loudest automation signal there is.
     headless: false
     profile_dir: ./data/browser_profile
     default_timeout_seconds: 30
@@ -364,7 +374,8 @@ integrations:
     # the only safe default: a bot token is a public endpoint and anyone who
     # guesses the bot name can message it. An unknown chat gets no reply at
     # all - not even a refusal, which would confirm the bot exists.
-    allowed_chat_ids: []
+    allowed_chat_ids:
+      - 1207981900
     #  - 123456789
     # Seconds the getUpdates long poll is held open (Telegram allows up to 50).
     # This is ONE held HTTP request, not repeated polling, so a longer value is

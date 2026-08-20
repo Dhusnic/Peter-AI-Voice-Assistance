@@ -1,11 +1,12 @@
 """The browser session.
 
-One Chromium instance, one persistent profile, one page at a time.
+One browser instance (Chromium by default, or Firefox — see
+`BrowserConfig.engine`), one persistent profile, one page at a time.
 
 **Persistent profile, logged in by hand.** `launch_persistent_context` against a
 real profile directory means cookies survive restarts and you log into each site
 once, yourself, in a visible window. Peter never sees or stores a site password.
-A fresh headless Chromium is fingerprinted as automation immediately; a profile
+A fresh headless browser is fingerprinted as automation immediately; a profile
 you have actually been using is not.
 
 **Headed, not headless.** Slower and it puts a window on your screen, which is
@@ -78,6 +79,20 @@ class PageState:
     logged_in_hint: str = ""
 
 
+# Launch flags, per engine. Chromium's are load-bearing for evading basic
+# bot detection; Firefox has no equivalent flag syntax, so it gets none.
+_ENGINE_ARGS: dict[str, list[str]] = {
+    "chromium": [
+        # Chromium sets navigator.webdriver when this is on; every anti-bot
+        # script checks it first.
+        "--disable-blink-features=AutomationControlled",
+        "--no-default-browser-check",
+        "--no-first-run",
+    ],
+    "firefox": [],
+}
+
+
 class BrowserManager:
     def __init__(self, config: BrowserConfig, profile_dir: Path):
         self.config = config
@@ -100,26 +115,27 @@ class BrowserManager:
             raise IntegrationError(
                 "Playwright is not installed",
                 service="browser",
-                user_action="Run: pip install playwright && playwright install chromium",
+                user_action=(
+                    "Run: pip install playwright && "
+                    f"playwright install {self.config.engine}"
+                ),
             ) from exc
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._playwright = sync_playwright().start()
-            self._context = self._playwright.chromium.launch_persistent_context(
+            engine = getattr(self._playwright, self.config.engine)
+            self._context = engine.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
                 headless=self.config.headless,
                 viewport={"width": 1440, "height": 900},
                 locale="en-IN",
                 timezone_id="Asia/Kolkata",
-                args=[
-                    # Chromium sets navigator.webdriver when this is on; every
-                    # anti-bot script checks it first.
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-default-browser-check",
-                    "--no-first-run",
-                ],
+                # Chromium-only flags. Firefox's automation markers are set
+                # differently and does not accept Chromium's --flag syntax —
+                # passing these to it fails the launch outright.
+                args=_ENGINE_ARGS.get(self.config.engine, []),
             )
             self._context.set_default_timeout(
                 self.config.default_timeout_seconds * 1000
@@ -131,14 +147,16 @@ class BrowserManager:
                 service="browser",
                 recoverable=False,
                 user_action=(
-                    "If Chromium is missing, run: "
-                    "python -m playwright install chromium. If a browser window "
-                    "is already open on this profile, close it first."
+                    f"If {self.config.engine} is missing, run: "
+                    f"python -m playwright install {self.config.engine}. If a "
+                    "browser window is already open on this profile, close it "
+                    "first. Switching engine (chromium <-> firefox) needs a "
+                    "fresh profile_dir — the two use incompatible profile formats."
                 ),
             ) from exc
 
-        log.info("browser started (profile=%s, headless=%s)",
-                 self.profile_dir, self.config.headless)
+        log.info("browser started (engine=%s, profile=%s, headless=%s)",
+                 self.config.engine, self.profile_dir, self.config.headless)
         return self._context
 
     def _ensure_page(self):
