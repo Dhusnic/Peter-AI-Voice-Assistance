@@ -7,6 +7,7 @@
     python -m peter.main --google-auth   authorise Calendar and Tasks
     python -m peter.main --briefing      print today's briefing and exit
     python -m peter.main --telegram-setup  find your Telegram chat id
+    python -m peter.main --perf-report   print per-tool timing stats and exit
 
 Two things this does that peter_1.0 did not:
 
@@ -38,6 +39,7 @@ from peter.core.services import ServiceContainer, set_container
 from peter.inbox_digest import schedule_inbox_digest
 from peter.meeting_prep import schedule_meeting_prep
 from peter.memory.store import MemoryStore
+from peter.perf import PerfLog, full_report as perf_full_report
 from peter.policy.audit import AuditLog
 from peter.policy.gate import ConsoleConfirmer, Policy, PolicyGate
 from peter.price_watch import schedule_price_watches
@@ -64,11 +66,13 @@ class Peter:
         self.container = ServiceContainer(config)
         self.container.memory = MemoryStore(config.db_path)
         self.container.audit = AuditLog(config.audit_path)
+        self.container.perf = PerfLog(config.db_path)
         self.container.scheduler = Scheduler(config.db_path)
         set_container(self.container)
 
         self.gate = PolicyGate(
-            Policy.from_config(config.policy), self.container.audit
+            Policy.from_config(config.policy), self.container.audit,
+            perf=self.container.perf,
         )
         registry.set_interceptor(self.gate)
 
@@ -430,6 +434,22 @@ def _cmd_briefing(config: Config) -> int:
     return 0
 
 
+def _cmd_perf_report(config: Config) -> int:
+    """Detailed per-tool timing table over the last 7 days. Reads whatever
+    the running/most-recent Peter process has already recorded in
+    peter.db — this does not run Peter itself, so an unused install prints
+    "no tool calls recorded"."""
+    container = ServiceContainer(config)
+    container.perf = PerfLog(config.db_path)
+    set_container(container)
+    print()
+    print(perf_full_report(hours=24 * 7))
+    print()
+    container.close()
+    set_container(None)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="peter", description="Peter 3.0")
     parser.add_argument("--text", action="store_true",
@@ -448,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="print today's briefing and exit")
     parser.add_argument("--telegram-setup", action="store_true",
                         help="find your Telegram chat id and exit")
+    parser.add_argument("--perf-report", action="store_true",
+                        help="print per-tool timing stats (last 7 days) and exit")
     args = parser.parse_args(argv)
 
     # Windows consoles default to cp1252, which cannot encode a rupee sign or
@@ -497,6 +519,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_briefing(config)
     if args.telegram_setup:
         return _cmd_telegram_setup(config)
+    if args.perf_report:
+        return _cmd_perf_report(config)
 
     if not config.secrets.any_llm_key:
         log.error(

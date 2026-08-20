@@ -182,6 +182,7 @@ TOOL_MODULES = (
     "peter.tools.routine_tools",
     "peter.tools.news_tools",
     "peter.tools.notes_tools",
+    "peter.tools.perf_tools",
 )
 
 # Modules whose tools cannot possibly succeed without credentials, and the

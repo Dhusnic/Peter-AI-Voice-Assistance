@@ -75,8 +75,13 @@ class NoteStore:
         return int(cur.lastrowid)
 
     def recent(self, limit: int = 10) -> list[tuple[int, str, float]]:
+        # id DESC as a tiebreaker: time.time()'s resolution on Windows is
+        # coarse enough that two notes added in quick succession can land on
+        # the exact same created_at, and ORDER BY created_at alone would then
+        # sort them arbitrarily. id is monotonic with insertion order, so it
+        # always breaks the tie correctly.
         rows = self.db.query(
-            "SELECT id, text, created_at FROM notes ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, text, created_at FROM notes ORDER BY created_at DESC, id DESC LIMIT ?",
             (limit,),
         )
         return [(r["id"], r["text"], r["created_at"]) for r in rows]

@@ -31,6 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from peter.deliveries import DeliveryStore
     from peter.expenses import ExpenseStore
     from peter.notes import NoteStore
+    from peter.perf import PerfLog
     from peter.price_watch import WatchStore
     from peter.scheduler.jobs import Scheduler
     from peter.spend import SpendLog
@@ -48,6 +49,7 @@ class ServiceContainer:
         self.memory: Optional["MemoryStore"] = None
         self.scheduler: Optional["Scheduler"] = None
         self.audit: Optional["AuditLog"] = None
+        self.perf: Optional["PerfLog"] = None
         self.speaker = None
         # Set by main.py. Lets the LLM tools inspect and switch the provider.
         self.brain: Optional["Brain"] = None
@@ -79,6 +81,11 @@ class ServiceContainer:
         if self.scheduler is None:
             raise RuntimeError("scheduler not initialised")
         return self.scheduler
+
+    def require_perf(self) -> "PerfLog":
+        if self.perf is None:
+            raise RuntimeError("perf log not initialised")
+        return self.perf
 
     def say(self, text: str) -> None:
         """Speak if a voice backend exists; print otherwise."""
@@ -233,6 +240,11 @@ class ServiceContainer:
                     store.close()
                 except Exception:
                     log.debug("store close failed", exc_info=True)
+        if self.perf is not None:
+            try:
+                self.perf.close()
+            except Exception:
+                log.debug("perf log close failed", exc_info=True)
         if self.memory is not None:
             self.memory.close()
 

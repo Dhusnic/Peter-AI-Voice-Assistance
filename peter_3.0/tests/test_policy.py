@@ -1,4 +1,5 @@
 import json
+import time
 from contextlib import contextmanager
 
 import pytest
@@ -194,6 +195,95 @@ def test_shipped_policy_keeps_destructive_tools_gated(config):
 def test_shipped_policy_still_hands_off_spending(config):
     shipped = Policy.from_config(config.policy)
     assert shipped.decide("some_future_purchase_tool", "spend") == HANDOFF
+
+
+# ------------------------------------------------------------------ perf
+def test_perf_is_recorded_on_a_successful_call(policy, audit, tmp_path):
+    from peter.perf import PerfLog
+
+    perf_log = PerfLog(tmp_path / "perf.db")
+    gate = PolicyGate(policy, audit, AutoApprove(True), perf=perf_log)
+
+    gate("get_time", "read", lambda: "six", {})
+
+    stats = perf_log.summary(hours=1)
+    assert len(stats) == 1
+    assert stats[0].tool == "get_time"
+    assert stats[0].calls == 1
+    perf_log.close()
+
+
+def test_perf_is_recorded_on_a_failed_call(policy, audit, tmp_path):
+    from peter.perf import PerfLog
+
+    perf_log = PerfLog(tmp_path / "perf.db")
+    gate = PolicyGate(policy, audit, AutoApprove(True), perf=perf_log)
+
+    def boom():
+        raise ValueError("nope")
+
+    gate("read_file", "read", boom, {})
+
+    stats = perf_log.summary(hours=1, include_errors=True)
+    assert stats[0].calls == 1
+    assert stats[0].errors == 1
+    perf_log.close()
+
+
+def test_perf_is_not_recorded_for_a_declined_call(policy, audit, tmp_path):
+    """No tool body ran, so there is nothing to time."""
+    from peter.perf import PerfLog
+
+    perf_log = PerfLog(tmp_path / "perf.db")
+    gate = PolicyGate(policy, audit, AutoApprove(False), perf=perf_log)
+
+    gate("delete_file", "write", lambda: "gone", {})
+
+    assert perf_log.summary(hours=1, include_errors=True) == []
+    perf_log.close()
+
+
+def test_gate_works_with_no_perf_log_at_all(policy, audit):
+    """perf=None must never break a tool call — it's the default."""
+    gate = PolicyGate(policy, audit, AutoApprove(True))
+    assert gate("get_time", "read", lambda: "six", {}) == "six"
+
+
+def test_perf_captures_cpu_and_wait_split(policy, audit, tmp_path):
+    from peter.perf import PerfLog
+
+    perf_log = PerfLog(tmp_path / "perf.db")
+    gate = PolicyGate(policy, audit, AutoApprove(True), perf=perf_log)
+
+    def sleepy():
+        time.sleep(0.02)
+        return "done"
+
+    gate("slow_tool", "read", sleepy, {})
+
+    s = perf_log.summary(hours=1)[0]
+    assert s.avg_wall_ms >= 15  # allow scheduler slack under a 20ms sleep
+    assert s.avg_wait_ms > s.avg_cpu_ms  # mostly waiting, not computing
+    perf_log.close()
+
+
+def test_perf_records_phases_a_tool_opts_into(policy, audit, tmp_path):
+    from peter import perf as perf_module
+    from peter.perf import PerfLog
+
+    perf_log = PerfLog(tmp_path / "perf.db")
+    gate = PolicyGate(policy, audit, AutoApprove(True), perf=perf_log)
+
+    def instrumented():
+        with perf_module.phase("step_a"):
+            time.sleep(0.005)
+        return "ok"
+
+    gate("instrumented_tool", "read", instrumented, {})
+
+    breakdown = perf_log.phase_breakdown("instrumented_tool", hours=1)
+    assert breakdown[0][0] == "step_a"
+    perf_log.close()
 
 
 # ==================================================== ConsoleConfirmer + spinner

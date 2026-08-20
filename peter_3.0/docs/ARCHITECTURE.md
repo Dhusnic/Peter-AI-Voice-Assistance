@@ -178,6 +178,13 @@ flowchart LR
         NT3["Never injected automatically, only recalled when asked"]
     end
 
+    subgraph SG_PF["Performance"]
+        direction TB
+        PF1["Every tool call timed: wall / CPU / wait"]
+        PF2["Flags tools worth a native rewrite, with evidence"]
+        PF3["Zero per-tool code changes needed"]
+    end
+
     P --> SG_V
     P --> SG_S
     P --> SG_T
@@ -197,6 +204,7 @@ flowchart LR
     P --> SG_RT
     P --> SG_NW
     P --> SG_NT
+    P --> SG_PF
 ```
 
 ### 1.2 What each area means in practice
@@ -560,7 +568,7 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **136 tools currently registered**, split by permission tier:
+- **137 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
@@ -588,7 +596,8 @@ flowchart LR
 | `routine_tools.py` | 1 | 1 | run / list config-defined tool chains |
 | `news_tools.py` | 1 | 0 | top headlines (Google News RSS, no key needed) |
 | `notes_tools.py` | 2 | 2 | add/search/list/delete quick journal notes |
-| **Total** | **67** | **69** | |
+| `perf_tools.py` | 1 | 0 | per-tool timing report (busiest tools, native-rewrite candidates) |
+| **Total** | **68** | **69** | |
 
   Seven of the write-tier tools are pulled back to *confirm* by standing rules
   in `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
@@ -1642,6 +1651,66 @@ sharp for the model choosing between them.
 
 ---
 
+### 2.20 Performance profiling — `peter/perf.py`, `peter/tools/perf_tools.py`
+
+Direct follow-up to the language-architecture discussion: rather than guess
+whether any tool is CPU-bound enough to be worth a Rust/PyO3 rewrite, measure
+it. Every one of the 137 registered tools gets timed with zero changes to any
+of them, by adding one more measurement at the exact point `policy/gate.py`
+was already timing calls for the audit log.
+
+**The wall/CPU/wait split is the entire idea.** `_execute()` in `gate.py`
+brackets `fn(**kwargs)` with both `time.perf_counter()` (wall clock) and
+`peter.perf.cpu_time()` (this thread's own CPU seconds, via
+`time.thread_time()`). `cpu_ms` is what the thread actually spent computing;
+`wait_ms = wall_ms - cpu_ms` is everything else — a network round trip, a
+subprocess (`adb`, `gh`), a disk read, or the thread waiting for the GIL
+while a concurrent scheduler job or the Telegram poll thread runs. That last
+case means `wait_ms` is not a pure I/O measurement, and the module docstring
+says so plainly — but the imprecision doesn't matter, because a call that
+is mostly `wait_ms` for *any* reason cannot be sped up by rewriting *that*
+tool in a faster language, which is the only question this exists to answer.
+`thread_time()` specifically, not `process_time()`, so one tool's number
+never gets inflated by unrelated CPU work happening on another thread at the
+same moment.
+
+**Storage and reporting reuse existing infrastructure rather than invent
+new patterns.** `PerfLog` is a `Db`-backed store in the shared `peter.db`,
+same shape as `spend.py`'s `SpendLog` — except spend keeps a year of history
+and perf writes a row on *every single tool call*, so it keeps only 30 days
+by default and prunes itself automatically every 500 inserts rather than
+waiting on a scheduled job nobody wired up (unlike `spend.prune()`, which
+exists but is never called from anywhere — a pre-existing gap this
+deliberately did not repeat). Percentiles (`p50`/`p95`) are computed in
+Python after a per-tool fetch rather than approximated in SQL, since SQLite
+has no percentile function and per-tool row counts are small enough that
+this is simpler and exact rather than clever and approximate.
+
+**A tool can opt into a finer breakdown, but nothing requires it.** The
+`perf.phase("name")` context manager, backed by a thread-local dict, lets a
+specific tool body time its own named sub-steps (e.g. `http_request` vs.
+`json_parse` inside `browser_search`) — additive on top of the automatic
+wall/CPU/wait split every tool already gets, and worth reaching for only on
+a tool a first report has already flagged. `reset_phases()` runs immediately
+before the tool body, `take_phases()` immediately after, both inside
+`gate._execute()`, so a call that never touches `phase()` costs nothing extra
+and phases from one call can never leak into the next.
+
+**The two-factor bar for "maybe rewrite this" is the same one from the
+language-architecture notes, now checked automatically.** `report()` flags a
+tool only when its average CPU time is both large in absolute terms
+(`CPU_CANDIDATE_MS = 200`) *and* most of what the call actually takes
+(`CPU_CANDIDATE_SHARE = 0.5`) — a tool that is slow but waiting (high
+`wait_ms`) or fast but CPU-heavy (a few ms either way) clears neither bar on
+purpose. `python -m peter.main --perf-report` prints the full table plus any
+phase breakdowns; the `performance_report` tool gives the same verdict as a
+few spoken lines. The table starts empty on a fresh install — it only knows
+about calls made since this was added — so the honest answer to "should
+anything move to Rust" is "check back after a week of normal use," not a
+guess either way.
+
+---
+
 ## Appendix — file map
 
 ```
@@ -1667,7 +1736,7 @@ peter_3.0/
 │   ├── policy/
 │   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
 │   │   └── audit.py              # append-only JSONL trail
-│   ├── tools/                   # §2.3 the 136 registered tools
+│   ├── tools/                   # §2.3 the 137 registered tools
 │   ├── memory/store.py          # §2.5 SQLite + FTS5
 │   ├── scheduler/jobs.py        # §2.8 APScheduler + SQLite jobstore
 │   ├── meeting_prep.py          # §2.10 calendar + memory nudge
@@ -1686,6 +1755,7 @@ peter_3.0/
 │   ├── deliveries.py             # §2.18 courier SMS -> shipment tracker
 │   ├── routines.py               # §2.19 named chains of Peter's own tools
 │   ├── notes.py                  # §2.19 timestamped journal, SQLite + FTS5
+│   ├── perf.py                   # §2.20 per-tool wall/CPU/wait timing + reports
 │   ├── ui/
 │   │   ├── progress.py           # §2.9b CLI status line, branded spinners
 │   │   ├── confirm.py            # voice-mode spoken yes/no confirmer

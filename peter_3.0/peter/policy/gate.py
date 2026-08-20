@@ -12,6 +12,7 @@ instead of hearing an answer.
 
 from __future__ import annotations
 
+import logging
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -20,6 +21,9 @@ from typing import Any, Callable, Protocol
 from peter.core.config import PolicyConfig
 from peter.core.errors import IntegrationError, PeterError
 from peter.policy.audit import AuditLog
+from peter import perf as perf_module
+
+log = logging.getLogger(__name__)
 
 ALLOW = "allow"
 CONFIRM = "confirm"
@@ -141,10 +145,15 @@ class PolicyGate:
         policy: Policy,
         audit: AuditLog,
         confirmer: Confirmer | None = None,
+        perf: Any = None,
     ):
         self.policy = policy
         self.audit = audit
         self.confirmer: Confirmer = confirmer or AlwaysDeny()
+        # Optional so every existing test/caller that builds a gate with just
+        # (policy, audit, confirmer) keeps working — None just means calls
+        # through this gate are not profiled. main.py always passes a real one.
+        self.perf = perf
 
     def set_confirmer(self, confirmer: Confirmer) -> None:
         self.confirmer = confirmer
@@ -178,6 +187,8 @@ class PolicyGate:
         self, name: str, tier: str, decision: str, fn: Callable, kwargs: dict
     ) -> Any:
         started = time.perf_counter()
+        cpu_started = perf_module.cpu_time()
+        perf_module.reset_phases()
         try:
             result = fn(**kwargs)
         except IntegrationError as exc:
@@ -185,12 +196,15 @@ class PolicyGate:
             # Claude gets a sentence it can say, including what the user should
             # do about it — never a stack trace.
             self._record_error(name, tier, decision, kwargs, started, exc)
+            self._record_perf(name, started, cpu_started, ok=False)
             return exc.spoken()
         except PeterError as exc:
             self._record_error(name, tier, decision, kwargs, started, exc)
+            self._record_perf(name, started, cpu_started, ok=False)
             return f"That did not work: {exc}"
         except Exception as exc:
             self._record_error(name, tier, decision, kwargs, started, exc)
+            self._record_perf(name, started, cpu_started, ok=False)
             return f"Error running {name}: {type(exc).__name__}: {exc}"
 
         elapsed = (time.perf_counter() - started) * 1000
@@ -202,6 +216,7 @@ class PolicyGate:
             result_summary=str(result),
             duration_ms=elapsed,
         )
+        self._record_perf(name, started, cpu_started, ok=True)
         return result
 
     def _record_error(
@@ -221,3 +236,19 @@ class PolicyGate:
             duration_ms=(time.perf_counter() - started) * 1000,
             error=f"{type(exc).__name__}: {exc}",
         )
+
+    def _record_perf(
+        self, name: str, started: float, cpu_started: float, *, ok: bool
+    ) -> None:
+        """Best-effort — a broken perf log must never break a tool call, the
+        same rule the audit log follows two lines up."""
+        if self.perf is None:
+            return
+        wall_ms = (time.perf_counter() - started) * 1000
+        cpu_ms = max(0.0, (perf_module.cpu_time() - cpu_started) * 1000)
+        wait_ms = max(0.0, wall_ms - cpu_ms)
+        phases = perf_module.take_phases()
+        try:
+            self.perf.record(name, wall_ms, cpu_ms, wait_ms, phases=phases, ok=ok)
+        except Exception:
+            log.debug("perf recording failed for %s", name, exc_info=True)

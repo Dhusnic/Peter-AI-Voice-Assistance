@@ -35,6 +35,7 @@ to do when something is not working. For *how it is built*, see
    - [4.19 Routines](#419-routines)
    - [4.20 News](#420-news)
    - [4.21 Notes and journal](#421-notes-and-journal)
+   - [4.22 Performance](#422-performance)
 5. [What Peter does without being asked](#5-what-peter-does-without-being-asked)
 6. [Permissions — what stops and asks](#6-permissions)
 7. [Setup guides for each integration](#7-setup-guides)
@@ -642,6 +643,27 @@ a note is never recalled automatically on a later turn the way a remembered
 fact is — Peter only surfaces one when you search or ask for recent notes.
 Use this for one-off things worth writing down, not standing facts about you.
 
+<a name="422-performance"></a>
+### 4.22 Performance
+
+> **"how's your performance"**
+> "which tools are slow"
+
+Every tool call is timed automatically — how long it took, and how much of
+that was actual computation versus waiting on a network call or another
+process. Nothing needs switching on; this has been running since the tool
+that made the call first ran.
+
+> "worth a native rewrite" only ever means something did real, measurable
+> computing for a long time — not just "took a while," since waiting on the
+> network is not something a faster language can fix. For most of what Peter
+> does, nothing crosses that bar, and the report says so plainly rather than
+> manufacturing a candidate that isn't there.
+
+For the full per-tool table, run `python -m peter.main --perf-report`
+([§8](#8-command-line-reference)) — it breaks every tool down by call count,
+average/P50/P95/max time, and how much of that was CPU versus waiting.
+
 ---
 
 <a name="5-what-peter-does-without-being-asked"></a>
@@ -956,6 +978,7 @@ News and notes need nothing beyond `integrations.news.enabled` /
 | `--google-auth` | Authorise Google Calendar and Tasks |
 | `--telegram-setup` | Find your Telegram chat id |
 | `--briefing` | Print today's briefing and exit |
+| `--perf-report` | Print per-tool timing stats (last 7 days) and exit |
 
 `--health` is the first thing to run when anything seems wrong. It reports every
 subsystem, distinguishing **disabled** (you turned it off), **not configured**
@@ -966,7 +989,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 <a name="9-complete-tool-reference"></a>
 ## 9. Complete tool reference
 
-136 tools. `[r]` read, `[w]` write, `[!]` always confirms.
+137 tools. `[r]` read, `[w]` write, `[!]` always confirms.
 
 **System** — `open_app` [w] · `list_files` [r] · `read_file` [r] ·
 `search_files` [r] · `write_file` [w] · `delete_file` [!] · `move_file` [w] ·
@@ -1040,6 +1063,8 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 
 **Notes** — `add_note` [w] · `search_notes` [r] · `recent_notes` [r] ·
 `delete_note` [w]
+
+**Performance** — `performance_report` [r]
 
 **Desktop** — `open_url` [w] · `open_website` [w] · `open_named_site` [w] ·
 `play_youtube` [w] · `control_playback` [w] · `search_bookmarks` [r] ·
@@ -1178,8 +1203,9 @@ What stays on this machine, always:
 - **Meeting audio and transcription.** faster-whisper runs on your CPU. Only the
   final text summary is a model call.
 - **Memory, documents, price watches, workspaces, the spend ledger, the
-  expense and delivery ledgers, notes, the audit log.** All local SQLite in
-  `data/`.
+  expense and delivery ledgers, notes, the performance log, the audit log.**
+  All local SQLite in `data/` — the performance log holds nothing but a
+  tool's name and how long it took, never its arguments or its result.
 - **Site passwords.** Peter never handles them; you log in by hand and the
   browser profile is reused.
 - **GitHub and phone credentials.** Held by `gh` and by ADB's per-machine
