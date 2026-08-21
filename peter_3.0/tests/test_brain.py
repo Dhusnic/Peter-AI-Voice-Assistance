@@ -259,6 +259,40 @@ def test_retry_hook_fires_alongside_the_spoken_retry_announcement(store, config)
     assert seen == [("fake", 2, 5, 10.0)]
 
 
+def test_fallback_hook_fires_when_the_provider_calls_on_fallback(store, config):
+    """Wired up by main.py for the CLI spinner (peter/ui/progress.py's
+    switching_model) — without this a silent Gemini same-tier substitution
+    left the spinner stuck on "thinking..." with no clue why."""
+    brain, provider = make_brain(store, config)
+    seen = []
+    brain.fallback_hook = lambda from_model, to_model: seen.append(
+        (from_model, to_model)
+    )
+
+    provider.on_fallback("gemini-3.7-flash", "gemini-3.6-flash")
+
+    assert seen == [("gemini-3.7-flash", "gemini-3.6-flash")]
+
+
+def test_fallback_hook_survives_a_provider_switch(store, config, monkeypatch):
+    """switch_provider() builds a brand new provider instance — the hook must
+    be rewired onto it, not left dangling on the old, discarded one."""
+    brain, _ = make_brain(store, config)
+    replacement = FakeProvider(model="other-model")
+    monkeypatch.setattr(
+        "peter.llm.factory.build_provider", lambda *a, **k: replacement
+    )
+    brain.switch_provider("openai")
+
+    seen = []
+    brain.fallback_hook = lambda from_model, to_model: seen.append(
+        (from_model, to_model)
+    )
+    replacement.on_fallback("model-a", "model-b")
+
+    assert seen == [("model-a", "model-b")]
+
+
 # ================================== bounding history without losing context
 def test_old_turns_are_folded_into_memory_before_they_age_out(store, config):
     """History is the one part of a request that cannot be cached, so trim()

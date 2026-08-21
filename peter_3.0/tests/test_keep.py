@@ -250,20 +250,20 @@ def test_keep_service_not_configured_without_credentials(container):
 
 # ------------------------------------------------------------------- tools
 def test_list_keep_notes_tool_reports_none(monkeypatch, container):
-    from peter.tools.keep_tools import list_keep_notes
+    from peter.skills.keep.tools import list_keep_notes
 
     monkeypatch.setattr(container, "keep", lambda: _client(_FakeKeep(), monkeypatch))
     assert list_keep_notes() == "No Keep notes."
 
 
 def test_create_keep_note_tool_rejects_empty_text():
-    from peter.tools.keep_tools import create_keep_note
+    from peter.skills.keep.tools import create_keep_note
 
     assert "Give some text" in create_keep_note(text="   ")
 
 
 def test_pin_keep_note_tool_disambiguates_multiple_matches(monkeypatch, container):
-    from peter.tools.keep_tools import pin_keep_note
+    from peter.skills.keep.tools import pin_keep_note
 
     fake = _FakeKeep(notes=[
         _FakeGkeepNote("n1", title="Groceries A"),
@@ -275,7 +275,7 @@ def test_pin_keep_note_tool_disambiguates_multiple_matches(monkeypatch, containe
 
 
 def test_delete_keep_note_tool_by_id(monkeypatch, container):
-    from peter.tools.keep_tools import delete_keep_note
+    from peter.skills.keep.tools import delete_keep_note
 
     fake = _FakeKeep(notes=[_FakeGkeepNote("n1", title="Groceries")])
     monkeypatch.setattr(container, "keep", lambda: _client(fake, monkeypatch))

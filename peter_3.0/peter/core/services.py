@@ -25,7 +25,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from peter.integrations.browser.manager import BrowserManager
     from peter.integrations.google.calendar import CalendarClient
     from peter.integrations.google.contacts import ContactsClient
+    from peter.integrations.google.drive import DriveClient
+    from peter.integrations.google.gdocs import GDocsClient
     from peter.integrations.google.keep import KeepClient
+    from peter.integrations.google.sheets import SheetsClient
     from peter.integrations.google.tasks import TasksClient
     from peter.integrations.mail.client import MailClient
     from peter.memory.store import MemoryStore
@@ -62,6 +65,9 @@ class ServiceContainer:
         self._tasks: Optional["TasksClient"] = None
         self._contacts: Optional["ContactsClient"] = None
         self._keep: Optional["KeepClient"] = None
+        self._drive: Optional["DriveClient"] = None
+        self._sheets: Optional["SheetsClient"] = None
+        self._gdocs: Optional["GDocsClient"] = None
         self._browser: Optional["BrowserManager"] = None
 
         # Lazy — local SQLite stores, one per feature that needs to remember
@@ -230,6 +236,33 @@ class ServiceContainer:
                 self._keep = KeepClient(self.config)
         return self._keep
 
+    def drive(self) -> "DriveClient":
+        self._require_google()
+        with self._lock:
+            if self._drive is None:
+                from peter.integrations.google.drive import DriveClient
+
+                self._drive = DriveClient(self.config)
+        return self._drive
+
+    def sheets(self) -> "SheetsClient":
+        self._require_google()
+        with self._lock:
+            if self._sheets is None:
+                from peter.integrations.google.sheets import SheetsClient
+
+                self._sheets = SheetsClient(self.config)
+        return self._sheets
+
+    def gdocs(self) -> "GDocsClient":
+        self._require_google()
+        with self._lock:
+            if self._gdocs is None:
+                from peter.integrations.google.gdocs import GDocsClient
+
+                self._gdocs = GDocsClient(self.config)
+        return self._gdocs
+
     def _require_google(self) -> None:
         cfg = self.config.integrations.google
         if not cfg.enabled:
@@ -341,6 +374,14 @@ class ServiceContainer:
                 "ok" if profile.exists()
                 else "ready (no profile yet - run browser_login)"
             )
+
+        maps_cfg = self.config.integrations.maps
+        if not maps_cfg.enabled:
+            report["maps"] = "disabled"
+        elif not self.config.secrets.has_maps:
+            report["maps"] = "no GOOGLE_MAPS_API_KEY in .env"
+        else:
+            report["maps"] = "ok"
 
         report["telegram"] = self._telegram_health()
         report["dev tools"] = self._dev_health()

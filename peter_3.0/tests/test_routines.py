@@ -188,7 +188,7 @@ def test_describe_with_no_routines_says_so():
 # -------------------------------------------------------------------- tools
 def test_run_routine_tool_delegates_to_routines_run(container, monkeypatch):
     registry.reset_for_tests()
-    from peter.tools import routine_tools  # noqa: F401
+    from peter.skills.routines import tools as routine_tools  # noqa: F401
     from peter import routines as routines_module
 
     monkeypatch.setattr(routines_module, "run", lambda name, cfg: f"ran {name}")
@@ -200,7 +200,7 @@ def test_run_routine_tool_delegates_to_routines_run(container, monkeypatch):
 
 def test_list_routines_tool_delegates_to_routines_describe(container, monkeypatch):
     registry.reset_for_tests()
-    from peter.tools import routine_tools  # noqa: F401
+    from peter.skills.routines import tools as routine_tools  # noqa: F401
     from peter import routines as routines_module
 
     monkeypatch.setattr(routines_module, "describe", lambda cfg: "described")

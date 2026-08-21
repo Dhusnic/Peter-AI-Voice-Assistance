@@ -65,6 +65,18 @@ class RetryConfig(BaseModel):
     # exactly this number.
     base_delay_seconds: float = Field(default=10.0, gt=0)
     max_delay_seconds: float = Field(default=60.0, gt=0)
+    # Per-attempt HTTP request timeout, in seconds — passed straight to each
+    # vendor SDK's client (Anthropic/OpenAI/Google all accept one directly).
+    # None of the three SDKs are given a timeout anywhere else in this
+    # codebase, and a request that never times out never raises, which means
+    # it never reaches call_with_retry at all: the retry/backoff machinery
+    # below is useless against a hung connection, only against one that
+    # actually fails. Without this, a slow API response leaves Peter frozen
+    # silently — no error, no retry, no spoken feedback — for as long as the
+    # underlying socket stays open (unbounded for google-genai specifically,
+    # since it passes timeout=None straight through to httpx, which treats
+    # that as "disable the timeout" rather than "use a default").
+    request_timeout_seconds: float = Field(default=60.0, gt=0)
 
 
 class GeminiAutoConfig(BaseModel):
@@ -328,17 +340,22 @@ class MailConfig(BaseModel):
 class GoogleConfig(BaseModel):
     enabled: bool = True
     # Adding a scope here means a token authorised before the addition no
-    # longer covers it — Calendar/Tasks keep working, but Contacts/Drive
-    # calls get a 403 until `--google-auth` is re-run. The existing 403
-    # handling in each client's _call() already turns that into a spoken
-    # AuthError naming the fix, so this needs no special-case code, only a
-    # one-time re-auth after upgrading.
+    # longer covers it — Calendar/Tasks/Contacts keep working on their
+    # existing scopes, but Drive/Sheets/Docs calls get a 403 until
+    # `--google-auth` is re-run. The existing 403 handling in each client's
+    # _call() already turns that into a spoken AuthError naming the fix, so
+    # this needs no special-case code, only a one-time re-auth after
+    # upgrading — and because scopes live on the shared token, not per API,
+    # that one re-auth covers Calendar/Tasks/Contacts too, not just the new
+    # Drive/Sheets/Docs tools.
     scopes: list[str] = Field(
         default_factory=lambda: [
             "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/tasks",
             "https://www.googleapis.com/auth/contacts.readonly",
-            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/documents",
         ]
     )
     calendar_id: str = "primary"
@@ -609,11 +626,14 @@ class WorkspaceConfig(BaseModel):
 
 
 class PhoneConfig(BaseModel):
-    """Reading the phone over ADB — SMS, mainly, for one-time codes.
+    """Reading and controlling the phone over ADB — SMS/OTP, calls, apps,
+    files, contacts, device settings, notifications, location, and (opt-in)
+    a raw shell escape hatch. See peter/integrations/phone/adb.py.
 
     Off by default: it needs USB debugging enabled and the machine authorised
-    on the handset, which is a deliberate act, not a default state. Read-only
-    on purpose — Peter never sends a message as you.
+    on the handset, which is a deliberate act, not a default state. Peter
+    never sends a text message as you, and never performs any tap/swipe/type
+    UI automation — those remain out of scope regardless of this being on.
     """
 
     enabled: bool = False
@@ -657,6 +677,17 @@ class PhoneConfig(BaseModel):
             "/sdcard/Recordings/Call",
         ]
     )
+    # Raw `adb shell` access — the escape hatch for anything the named phone
+    # tools don't cover. Off by default even with `enabled` above true:
+    # tier=write + policy.standing_rules already gate run_phone_shell_command,
+    # this is belt-and-braces the same way KeepConfig/MapsConfig gate their
+    # riskiest capability with its own explicit opt-in, separate from the
+    # integration's own on/off switch. run_shell raises NotConfiguredError
+    # until this is true.
+    raw_shell_enabled: bool = False
+    # Default remote directory push_file_to_phone writes to when the caller
+    # doesn't name one.
+    push_default_dir: str = "/sdcard/Download"
 
 
 class ExpenseConfig(BaseModel):
@@ -807,10 +838,27 @@ class KeepConfig(BaseModel):
     enabled: bool = False
 
 
+class MapsConfig(BaseModel):
+    """Google Maps Platform — geocoding, directions, places. See
+    peter/integrations/maps.py.
+
+    Defaults to disabled, the one other exception besides KeepConfig: unlike
+    every other integration in this file, Maps Platform needs a Google Cloud
+    Billing account attached to the project even for free-tier personal use
+    — there is no billing-free tier at all, unlike the OAuth APIs above.
+    That is a real prerequisite only you can complete in Cloud Console; see
+    docs/USER_MANUAL.md before turning this on.
+    """
+
+    enabled: bool = False
+    timeout_seconds: float = Field(default=10.0, gt=0)
+
+
 class IntegrationsConfig(BaseModel):
     mail: MailConfig = Field(default_factory=MailConfig)
     google: GoogleConfig = Field(default_factory=GoogleConfig)
     keep: KeepConfig = Field(default_factory=KeepConfig)
+    maps: MapsConfig = Field(default_factory=MapsConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     briefing: BriefingConfig = Field(default_factory=BriefingConfig)
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
@@ -856,6 +904,9 @@ class Secrets(BaseModel):
     google_keep_email: str = ""
     google_keep_master_token: SecretStr = SecretStr("")
     telegram_bot_token: SecretStr = SecretStr("")
+    # A plain API key, not OAuth — Maps Platform's own auth model. Needs a
+    # Cloud Billing account attached to the project; see MapsConfig.
+    google_maps_api_key: SecretStr = SecretStr("")
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -876,6 +927,7 @@ class Secrets(BaseModel):
                 os.getenv("GOOGLE_KEEP_MASTER_TOKEN", "")
             ),
             telegram_bot_token=SecretStr(os.getenv("TELEGRAM_BOT_TOKEN", "")),
+            google_maps_api_key=SecretStr(os.getenv("GOOGLE_MAPS_API_KEY", "")),
         )
 
     # Convenience accessors, so callers never sprinkle .get_secret_value() around.
@@ -922,6 +974,14 @@ class Secrets(BaseModel):
     @property
     def telegram_token(self) -> str:
         return self.telegram_bot_token.get_secret_value()
+
+    @property
+    def maps_key(self) -> str:
+        return self.google_maps_api_key.get_secret_value()
+
+    @property
+    def has_maps(self) -> bool:
+        return bool(self.maps_key)
 
     @property
     def has_telegram(self) -> bool:

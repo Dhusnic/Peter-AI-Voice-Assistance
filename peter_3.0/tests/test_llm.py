@@ -155,6 +155,25 @@ def anthropic_provider(responses):
     return provider, client
 
 
+def test_anthropic_real_client_gets_a_request_timeout(monkeypatch):
+    """With no injected client, the real SDK client must be given an explicit
+    timeout — otherwise a hung request never raises, and call_with_retry never
+    gets a chance to fire (see RetryConfig.request_timeout_seconds)."""
+    import anthropic
+    from peter.llm.providers.anthropic_provider import AnthropicProvider
+
+    seen = {}
+    monkeypatch.setattr(
+        anthropic, "Anthropic", lambda **kwargs: seen.update(kwargs)
+    )
+
+    AnthropicProvider(
+        model="claude-opus-5", system="SYSTEM", api_key="x", timeout=42.0
+    )
+
+    assert seen["timeout"] == 42.0
+
+
 def test_anthropic_sends_a_cached_system_block():
     provider, client = anthropic_provider([
         _anthropic_response([SimpleNamespace(type="text", text="hi")])
@@ -271,6 +290,22 @@ def openai_provider(responses):
         model="gpt-5.6-terra", system="SYSTEM", api_key="x", client=client
     )
     return provider, client
+
+
+def test_openai_real_client_gets_a_request_timeout(monkeypatch):
+    import openai
+    from peter.llm.providers.openai_provider import OpenAIProvider
+
+    seen = {}
+    monkeypatch.setattr(
+        openai, "OpenAI", lambda **kwargs: seen.update(kwargs)
+    )
+
+    OpenAIProvider(
+        model="gpt-5.6-terra", system="SYSTEM", api_key="x", timeout=42.0
+    )
+
+    assert seen["timeout"] == 42.0
 
 
 def test_openai_puts_the_system_prompt_in_instructions():
@@ -416,6 +451,26 @@ class FakeGeminiClient:
     def _generate(self, **kwargs):
         self.calls.append(kwargs)
         return self.responses.pop(0)
+
+
+def test_gemini_real_client_gets_a_request_timeout(monkeypatch):
+    """google-genai passes timeout=None straight through to httpx, which reads
+    that as "no timeout" rather than "use a default" — worse than the other
+    two SDKs, which at least default to something finite on their own. This
+    must be set explicitly or a hung request never raises."""
+    import google.genai as genai_mod
+    from google.genai import types
+    from peter.llm.providers.gemini_provider import GeminiProvider
+
+    seen = {}
+    monkeypatch.setattr(
+        genai_mod, "Client", lambda **kwargs: seen.update(kwargs)
+    )
+
+    GeminiProvider(model="gemini-3.5-flash", system="SYSTEM", api_key="x", timeout=42.0)
+
+    assert isinstance(seen["http_options"], types.HttpOptions)
+    assert seen["http_options"].timeout == 42000
 
 
 def _gemini_response(parts, finish_reason="STOP", usage=None, text=""):
@@ -1263,6 +1318,49 @@ def test_fallback_candidates_are_tried_with_no_delay(monkeypatch):
     assert slept == []
 
 
+def test_on_fallback_fires_with_the_from_and_to_model_names():
+    """Surfaced to Brain/main.py so the CLI spinner can announce a silent
+    substitution instead of sitting on "thinking..." with no explanation."""
+    provider, _ = gemini_fallback_provider({
+        "gemini-3.7-flash": [_unavailable()],
+        "gemini-3.6-flash": [_gemini_response([], text="hi")],
+    })
+    seen = []
+    provider.on_fallback = lambda from_model, to_model: seen.append(
+        (from_model, to_model)
+    )
+    provider.add_user("hello")
+    provider.complete([SPEC])
+
+    assert seen == [("gemini-3.7-flash", "gemini-3.6-flash")]
+
+
+def test_on_fallback_does_not_fire_for_plain_auto_routing():
+    """Position 0 is the router picking a model, not a failure — that path
+    already has its own "auto-routing" log line and must not also claim to
+    be a fallback."""
+    provider, _ = gemini_fallback_provider(
+        {"gemini-3.1-pro-preview": [_gemini_response([], text="hi")]},
+        model="auto", auto_heavy_word_threshold=0,
+    )
+    seen = []
+    provider.on_fallback = lambda *a: seen.append(a)
+    provider.add_user("hello " * 50)
+    provider.complete([SPEC])
+
+    assert seen == []
+
+
+def test_on_fallback_left_unset_does_not_raise():
+    provider, _ = gemini_fallback_provider({
+        "gemini-3.7-flash": [_unavailable()],
+        "gemini-3.6-flash": [_gemini_response([], text="hi")],
+    })
+    provider.add_user("hello")
+    response = provider.complete([SPEC])
+    assert response.text == "hi"
+
+
 def test_a_non_recoverable_error_skips_the_fallback_chain():
     """A bad API key on the primary model is not fixed by trying another
     model — it should fail immediately, not burn two more calls proving it."""
@@ -1392,3 +1490,36 @@ def test_every_provider_has_a_configured_model(config):
 
     for provider in factory.PROVIDERS:
         assert factory.model_for(config, provider), f"{provider} has no model"
+
+
+def test_factory_threads_the_request_timeout_into_every_provider(config, monkeypatch):
+    """agent.retry.request_timeout_seconds must reach the constructor for all
+    three vendors — it is what lets a hung request actually raise into
+    call_with_retry instead of blocking forever (see RetryConfig's docstring)."""
+    from peter.core.config import Secrets
+    from peter.llm import factory
+
+    object.__setattr__(config, "_secrets", Secrets(
+        anthropic_api_key="a", openai_api_key="b", gemini_api_key="c",
+    ))
+
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "peter.llm.providers.anthropic_provider.AnthropicProvider", _capture
+    )
+    monkeypatch.setattr(
+        "peter.llm.providers.openai_provider.OpenAIProvider", _capture
+    )
+    monkeypatch.setattr(
+        "peter.llm.providers.gemini_provider.GeminiProvider", _capture
+    )
+
+    for provider in factory.PROVIDERS:
+        seen.clear()
+        factory.build_provider(config, "SYSTEM", provider=provider)
+        assert seen["timeout"] == config.agent.retry.request_timeout_seconds, provider

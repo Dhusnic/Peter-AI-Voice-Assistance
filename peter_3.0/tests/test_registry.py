@@ -177,24 +177,24 @@ def test_unconfigured_integrations_are_not_offered(monkeypatch):
     config = _config_with(monkeypatch, mail=False, google=False)
     chosen = registry.usable_modules(config)
 
-    assert "peter.tools.mail_tools" not in chosen
-    assert "peter.tools.calendar_tools" not in chosen
+    assert "peter.skills.mail.tools" not in chosen
+    assert "peter.skills.calendar.tools" not in chosen
 
 
 def test_configured_integrations_are_offered(monkeypatch):
     config = _config_with(monkeypatch, mail=True, google=True)
     chosen = registry.usable_modules(config)
 
-    assert "peter.tools.mail_tools" in chosen
-    assert "peter.tools.calendar_tools" in chosen
+    assert "peter.skills.mail.tools" in chosen
+    assert "peter.skills.calendar.tools" in chosen
 
 
 def test_each_integration_is_gated_independently(monkeypatch):
     config = _config_with(monkeypatch, mail=True, google=False)
     chosen = registry.usable_modules(config)
 
-    assert "peter.tools.mail_tools" in chosen
-    assert "peter.tools.calendar_tools" not in chosen
+    assert "peter.skills.mail.tools" in chosen
+    assert "peter.skills.calendar.tools" not in chosen
 
 
 def test_tools_that_work_without_credentials_are_always_offered(monkeypatch):
@@ -204,9 +204,9 @@ def test_tools_that_work_without_credentials_are_always_offered(monkeypatch):
     config = _config_with(monkeypatch, mail=False, google=False)
     chosen = registry.usable_modules(config)
 
-    for always in ("peter.tools.system", "peter.tools.time_tools",
-                   "peter.tools.memory_tools", "peter.tools.browser_tools",
-                   "peter.tools.briefing_tools", "peter.tools.llm_tools"):
+    for always in ("peter.skills.system.tools", "peter.skills.time.tools",
+                   "peter.skills.memory.tools", "peter.skills.browser.tools",
+                   "peter.skills.briefing.tools", "peter.skills.llm.tools"):
         assert always in chosen, always
 
 

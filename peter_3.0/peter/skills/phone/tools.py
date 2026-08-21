@@ -43,14 +43,22 @@ from peter.integrations.phone import adb
 register_skill(SkillManifest(
     name="phone", version="1.0.0",
     description="Reads and controls the phone over ADB: SMS, calls, "
-                 "Spotify, alarms, screenshots, voice notes.",
+                 "Spotify, alarms, screenshots, voice notes, apps, files, "
+                 "contacts, device settings, notifications, location, and "
+                 "a raw shell escape hatch.",
     module=__name__, permissions=("phone",),
     tools=("read_sms", "latest_code", "phone_status", "read_call_log",
            "read_phone_screen", "open_link_on_phone", "save_phone_screenshot",
            "transcribe_phone_voice_note", "call_contact", "make_phone_call",
            "answer_phone_call", "hang_up_phone_call", "play_music_on_phone",
            "pause_music_on_phone", "skip_track_on_phone", "set_phone_alarm",
-           "stop_phone_alarm"),
+           "stop_phone_alarm", "list_phone_apps", "launch_phone_app",
+           "uninstall_phone_app", "push_file_to_phone", "list_phone_files",
+           "delete_phone_file", "list_phone_contacts", "add_phone_contact",
+           "set_phone_wifi", "set_phone_bluetooth", "set_phone_airplane_mode",
+           "set_phone_volume", "set_phone_brightness", "reboot_phone",
+           "read_phone_notifications", "phone_location",
+           "run_phone_shell_command"),
 ))
 
 
@@ -406,3 +414,326 @@ def stop_phone_alarm() -> str:
     except PeterError as exc:
         return exc.spoken()
     return "Alarm dismissed."
+
+
+# ------------------------------------------------------------ app management
+@peter_tool(tier="read")
+def list_phone_apps(third_party_only: bool = True) -> str:
+    """List installed app package ids on the phone.
+
+    There is no reliable way to resolve a package id to a human-readable app
+    name without root, so this returns exact package ids (e.g.
+    "com.spotify.music") — call this first if you need the exact id for
+    launch_phone_app or uninstall_phone_app rather than guessing one.
+
+    Args:
+        third_party_only: True (default) lists only user-installed apps.
+            False includes every system package too, a much longer list.
+    """
+    cfg = _cfg()
+    try:
+        packages = adb.list_apps(cfg, third_party_only=third_party_only)
+    except PeterError as exc:
+        return exc.spoken()
+    if not packages:
+        return "No apps found."
+    return "\n".join(packages)
+
+
+@peter_tool(tier="write")
+def launch_phone_app(package: str) -> str:
+    """Launch an app on the phone by its exact package id.
+
+    Args:
+        package: The exact package id, e.g. "com.spotify.music". Call
+            list_phone_apps first if you don't already know it.
+    """
+    cfg = _cfg()
+    try:
+        adb.launch_app(cfg, package)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Launched {package}."
+
+
+@peter_tool(tier="write")
+def uninstall_phone_app(package: str, keep_data: bool = False) -> str:
+    """Uninstall an app from the phone by its exact package id. Irreversible
+    without reinstalling — asks for confirmation first.
+
+    Args:
+        package: The exact package id, e.g. "com.example.app".
+        keep_data: True to keep the app's data/cache in case of reinstall.
+    """
+    cfg = _cfg()
+    try:
+        adb.uninstall_app(cfg, package, keep_data=keep_data)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Uninstalled {package}."
+
+
+# --------------------------------------------------------------- file transfer
+@peter_tool(tier="write")
+def push_file_to_phone(local_path: str, remote_dir: str = "") -> str:
+    """Copy a file from this computer onto the phone.
+
+    Args:
+        local_path: Path to the local file to copy.
+        remote_dir: Phone directory to copy it into. Empty uses
+            integrations.phone.push_default_dir (Downloads by default).
+    """
+    from pathlib import Path
+
+    cfg = _cfg()
+    try:
+        remote_path = adb.push_file(
+            cfg, Path(local_path), remote_dir.strip() or cfg.push_default_dir
+        )
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Copied to {remote_path} on the phone."
+
+
+@peter_tool(tier="read")
+def list_phone_files(remote_dir: str) -> str:
+    """List files in a directory on the phone.
+
+    Args:
+        remote_dir: Phone directory to list, e.g. "/sdcard/Download".
+    """
+    cfg = _cfg()
+    try:
+        entries = adb.list_remote_dir(cfg, remote_dir)
+    except PeterError as exc:
+        return exc.spoken()
+    if not entries:
+        return f"{remote_dir} is empty."
+    return "\n".join(entries)
+
+
+@peter_tool(tier="write")
+def delete_phone_file(remote_path: str) -> str:
+    """Delete one file on the phone. Irreversible — asks for confirmation
+    first. Never recursive: only removes the exact file named.
+
+    Args:
+        remote_path: Full path to the file on the phone, e.g.
+            "/sdcard/Download/old-file.txt".
+    """
+    cfg = _cfg()
+    try:
+        adb.delete_remote_file(cfg, remote_path)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Deleted {remote_path} from the phone."
+
+
+# ----------------------------------------------------------------- contacts
+@peter_tool(tier="read")
+def list_phone_contacts(query: str = "") -> str:
+    """List saved phone contacts, optionally filtered by name.
+
+    Args:
+        query: Part of a contact's name to filter by. Empty lists every
+            saved contact.
+    """
+    cfg = _cfg()
+    try:
+        matches = adb.list_contacts(cfg, query=query)
+    except PeterError as exc:
+        return exc.spoken()
+    if not matches:
+        return f"No saved contact matching {query!r}." if query.strip() else "No saved contacts."
+    return "\n".join(f"{name} — {number}" for name, number in matches)
+
+
+@peter_tool(tier="write")
+def add_phone_contact(name: str, number: str) -> str:
+    """Add a new contact to the phone.
+
+    This writes directly to the phone's Contacts Provider and reads back
+    what was saved before reporting success — on some phones (notably
+    Samsung/Xiaomi), a contact created this way can be rejected or
+    partially saved by the phone's own account-sync system; if that
+    happens, this reports it rather than claiming success.
+
+    Args:
+        name: The contact's name.
+        number: The contact's phone number.
+    """
+    cfg = _cfg()
+    try:
+        adb.add_contact(cfg, name, number)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Added {name} ({number}) to phone contacts."
+
+
+# ------------------------------------------------------------ device settings
+@peter_tool(tier="write")
+def set_phone_wifi(enabled: bool) -> str:
+    """Turn the phone's WiFi on or off.
+
+    Args:
+        enabled: True to turn WiFi on, False to turn it off.
+    """
+    cfg = _cfg()
+    try:
+        adb.set_wifi(cfg, enabled)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"WiFi turned {'on' if enabled else 'off'}."
+
+
+@peter_tool(tier="write")
+def set_phone_bluetooth(enabled: bool) -> str:
+    """Turn the phone's Bluetooth on or off.
+
+    Not always reliable on Android 12 and newer — some phones require this
+    to be done on-device instead of over ADB. This reports honestly if the
+    phone did not confirm the change.
+
+    Args:
+        enabled: True to turn Bluetooth on, False to turn it off.
+    """
+    cfg = _cfg()
+    try:
+        confirmed = adb.set_bluetooth(cfg, enabled)
+    except PeterError as exc:
+        return exc.spoken()
+    state = "on" if enabled else "off"
+    if confirmed:
+        return f"Bluetooth turned {state}."
+    return (
+        f"Tried to turn Bluetooth {state}, but the phone did not confirm it changed — "
+        "some Android 12+ devices need this done on the phone itself."
+    )
+
+
+@peter_tool(tier="write")
+def set_phone_airplane_mode(enabled: bool) -> str:
+    """Turn the phone's airplane mode on or off. Asks for confirmation
+    first: if the phone is connected over WiFi (wireless ADB), turning
+    airplane mode on will likely disconnect it, and Peter cannot undo that
+    from here.
+
+    Args:
+        enabled: True to turn airplane mode on, False to turn it off.
+    """
+    cfg = _cfg()
+    try:
+        adb.set_airplane_mode(cfg, enabled)
+    except PeterError as exc:
+        return exc.spoken()
+    state = "on" if enabled else "off"
+    if enabled and (cfg.wireless_address or "").strip():
+        return (
+            f"Airplane mode turned {state} — this may have disconnected the "
+            "wireless ADB link; reconnect by USB or toggle airplane mode "
+            "back off on the phone if so."
+        )
+    return f"Airplane mode turned {state}."
+
+
+@peter_tool(tier="write")
+def set_phone_volume(percent: int) -> str:
+    """Set the phone's media (music) volume.
+
+    Args:
+        percent: Volume level, 0-100.
+    """
+    cfg = _cfg()
+    try:
+        adb.set_volume_percent(cfg, percent)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Phone volume set to {percent}%."
+
+
+@peter_tool(tier="write")
+def set_phone_brightness(percent: int) -> str:
+    """Set the phone's screen brightness. Turns off adaptive brightness so
+    the value sticks.
+
+    Args:
+        percent: Brightness level, 0-100.
+    """
+    cfg = _cfg()
+    try:
+        adb.set_brightness_percent(cfg, percent)
+    except PeterError as exc:
+        return exc.spoken()
+    return f"Phone brightness set to {percent}%."
+
+
+@peter_tool(tier="write")
+def reboot_phone() -> str:
+    """Reboot the phone. Disruptive — interrupts whatever is running on it
+    and drops the ADB connection (especially a wireless one) until it comes
+    back up. Asks for confirmation first.
+    """
+    cfg = _cfg()
+    try:
+        adb.reboot(cfg)
+    except PeterError as exc:
+        return exc.spoken()
+    return "Rebooting the phone."
+
+
+# --------------------------------------------------------------- notifications
+@peter_tool(tier="read")
+def read_phone_notifications(limit: int = 20) -> str:
+    """Read the phone's currently posted notifications — every app, not
+    just SMS. Best-effort: notification content is read from a diagnostic
+    system dump whose exact format can vary across Android versions.
+
+    Args:
+        limit: Maximum notifications to return, most recent first.
+    """
+    cfg = _cfg()
+    try:
+        found = adb.notifications(cfg, limit=limit)
+    except PeterError as exc:
+        return exc.spoken()
+    if not found:
+        return "No notifications found (or none could be read)."
+    return "\n".join(n.spoken() for n in found)
+
+
+# -------------------------------------------------------------------- location
+@peter_tool(tier="read")
+def phone_location() -> str:
+    """Report the phone's last known location. This is a cached value, not
+    a live GPS fix — it can be stale by minutes or hours, or unavailable
+    entirely (e.g. right after a reboot)."""
+    cfg = _cfg()
+    try:
+        location = adb.last_location(cfg)
+    except PeterError as exc:
+        return exc.spoken()
+    if location is None:
+        return "No location is currently cached on the phone."
+    return location.spoken()
+
+
+# ------------------------------------------------------------------- raw shell
+@peter_tool(tier="write")
+def run_phone_shell_command(command: str) -> str:
+    """Run an arbitrary `adb shell` command on the phone and return its
+    output verbatim. The escape hatch for anything none of the other phone
+    tools cover — prefer a named tool above when one exists. Asks for
+    confirmation first, every time: this is unrestricted, with no quoting
+    or validation applied to `command`.
+
+    Args:
+        command: The shell command to run on the phone, e.g.
+            "dumpsys battery" or "pm list packages -3".
+    """
+    cfg = _cfg()
+    if not command.strip():
+        return "Give a shell command to run."
+    try:
+        return adb.run_shell(cfg, command)
+    except PeterError as exc:
+        return exc.spoken()

@@ -4,8 +4,8 @@ Peter already has a local to-do list in SQLite. This exists so the list is the
 *same* list you see in Google Tasks on your phone — a to-do you can only reach
 by talking to your laptop is not a to-do list, it is a diary.
 
-The local store stays the source of truth for offline work; `peter/tools/
-todo_tools.py` decides which side a given operation writes to.
+The local store stays the source of truth for offline work; `peter/skills/
+calendar/tools.py` decides which side a given operation writes to.
 """
 
 from __future__ import annotations

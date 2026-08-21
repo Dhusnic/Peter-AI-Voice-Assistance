@@ -23,6 +23,7 @@ def phone_config(**kwargs):
         pull_dirs=["/sdcard/Pictures/Screenshots", "/sdcard/DCIM/Screenshots"],
         spotify_package="com.spotify.music",
         wireless_address="",
+        raw_shell_enabled=False, push_default_dir="/sdcard/Download",
     )
     base.update(kwargs)
     return SimpleNamespace(**base)
@@ -428,7 +429,7 @@ def test_the_code_is_read_out_digit_by_digit(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     message = adb.Sms(sender="VM-HDFC", body="123456 is your OTP", when=datetime.now())
     monkeypatch.setattr(adb, "latest_code", lambda cfg: ("123456", message))
@@ -443,7 +444,7 @@ def test_the_sms_tool_reports_a_disconnected_phone_speakably(container, monkeypa
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     def boom(*a, **k):
         raise IntegrationError(
@@ -952,7 +953,7 @@ def test_make_phone_call_tool_reports_success(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "call_number", lambda cfg, number: None)
 
@@ -965,7 +966,7 @@ def test_make_phone_call_tool_reports_a_bad_number_speakably(container, monkeypa
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     def boom(cfg, number):
         raise IntegrationError(f"{number!r} does not look like a phone number",
@@ -990,7 +991,7 @@ def test_call_contact_tool_resolves_a_single_matching_contact(container, monkeyp
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "find_contact", lambda cfg, name: [("Ancy", "9976197907")])
     dialled = {}
@@ -1012,7 +1013,7 @@ def test_call_contact_tool_asks_which_contact_when_ambiguous(container, monkeypa
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "find_contact", lambda cfg, name: [
         ("Ancy Mom", "9000000000"), ("Ancy Mom", "0442345678"),
@@ -1031,7 +1032,7 @@ def test_call_contact_tool_reports_no_matching_contact(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "find_contact", lambda cfg, name: [])
 
@@ -1044,7 +1045,7 @@ def test_call_contact_tool_requires_a_name(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     result = registry.get_record("call_contact").raw_fn(contact_name="")
 
@@ -1055,7 +1056,7 @@ def test_call_contact_tool_reports_a_lookup_failure_speakably(container, monkeyp
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     def boom(cfg, name):
         raise IntegrationError("adb is not installed", service="phone",
@@ -1072,7 +1073,7 @@ def test_answer_phone_call_tool_reports_success(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "answer_call", lambda cfg: None)
 
@@ -1083,7 +1084,7 @@ def test_hang_up_phone_call_tool_reports_success(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "hang_up_call", lambda cfg: None)
 
@@ -1094,7 +1095,7 @@ def test_play_music_on_phone_tool_names_the_query(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "launch_spotify", lambda cfg, query: None)
 
@@ -1107,7 +1108,7 @@ def test_pause_music_on_phone_tool_reports_success(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "pause_media", lambda cfg: None)
 
@@ -1118,7 +1119,7 @@ def test_skip_track_on_phone_tool_reports_success(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "next_track", lambda cfg: None)
 
@@ -1129,7 +1130,7 @@ def test_set_phone_alarm_tool_reports_the_time_and_label(container, monkeypatch)
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(
         adb, "set_alarm_on_phone", lambda cfg, hour, minute, label, days: None
@@ -1147,7 +1148,7 @@ def test_stop_phone_alarm_tool_reports_success(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "dismiss_phone_alarm", lambda cfg: None)
 
@@ -1158,7 +1159,7 @@ def test_read_call_log_tool_reports_calls(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     call = adb.Call(number="+91900", name="Mom", call_type="missed",
                      when=datetime.now(), duration_seconds=0)
@@ -1173,7 +1174,7 @@ def test_open_link_on_phone_tool_reports_success(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(adb, "open_url", lambda cfg, url: None)
 
@@ -1186,7 +1187,7 @@ def test_open_link_on_phone_tool_reports_the_error_speakably(container, monkeypa
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     def boom(cfg, url):
         raise IntegrationError("bad url", service="phone",
@@ -1203,7 +1204,7 @@ def test_save_phone_screenshot_tool_reports_the_saved_filename(container, monkey
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     monkeypatch.setattr(
         adb, "pull_latest_file", lambda cfg, dirs, local_dir: tmp_path / "shot.png"
@@ -1219,7 +1220,7 @@ def test_transcribe_phone_voice_note_tool_returns_the_transcript(container, monk
     import peter.meeting_notes as meeting_notes
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     audio_path = tmp_path / "note.opus"
     monkeypatch.setattr(
@@ -1236,7 +1237,7 @@ def test_transcribe_phone_voice_note_tool_reports_a_pull_failure_speakably(conta
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     def boom(cfg, dirs, local_dir):
         raise IntegrationError(
@@ -1258,7 +1259,7 @@ def test_transcribe_phone_voice_note_tool_reports_a_transcription_failure(
     import peter.meeting_notes as meeting_notes
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     audio_path = tmp_path / "note.opus"
     monkeypatch.setattr(adb, "pull_latest_file", lambda cfg, dirs, local_dir: audio_path)
@@ -1281,7 +1282,7 @@ def test_transcribe_phone_voice_note_tool_reports_an_empty_transcript(
     import peter.meeting_notes as meeting_notes
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     audio_path = tmp_path / "note.opus"
     monkeypatch.setattr(adb, "pull_latest_file", lambda cfg, dirs, local_dir: audio_path)
@@ -1296,7 +1297,7 @@ def test_read_phone_screen_tool_uses_the_vision_pipeline(container, monkeypatch)
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
     from peter.llm import vision
 
     monkeypatch.setattr(adb, "screenshot_bytes", lambda cfg: b"\x89PNGdata")
@@ -1311,7 +1312,7 @@ def test_read_phone_screen_tool_reports_a_disconnected_phone_speakably(container
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import phone_tools  # noqa: F401
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
 
     def boom(cfg):
         raise IntegrationError("no device", service="phone",
@@ -1322,3 +1323,742 @@ def test_read_phone_screen_tool_reports_a_disconnected_phone_speakably(container
     result = registry.get_record("read_phone_screen").raw_fn()
 
     assert "Connect the phone by USB" in result
+
+
+# =================================================================
+# Full-access expansion: app management, files, contacts, device
+# settings, notifications, location, raw shell.
+# =================================================================
+
+# ------------------------------------------------------------ app management
+def test_list_apps_strips_package_prefix(monkeypatch):
+    fake_adb(monkeypatch, "package:com.spotify.music\npackage:com.example.app\n")
+    assert adb.list_apps(phone_config()) == ["com.example.app", "com.spotify.music"]
+
+
+def test_list_apps_third_party_only_by_default(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.list_apps(phone_config())
+    assert "pm list packages -3" in calls[0][-1]
+
+
+def test_list_apps_can_list_everything(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.list_apps(phone_config(), third_party_only=False)
+    assert calls[0][-1].strip() == "pm list packages"
+
+
+def test_launch_app_builds_a_monkey_launch_command(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.launch_app(phone_config(), "com.spotify.music")
+    assert "monkey -p com.spotify.music -c android.intent.category.LAUNCHER 1" in calls[0][-1]
+
+
+def test_launch_app_rejects_an_empty_package_id():
+    with pytest.raises(IntegrationError):
+        adb.launch_app(phone_config(), "   ")
+
+
+def test_uninstall_app_builds_expected_command(monkeypatch):
+    calls = fake_adb(monkeypatch, "Success\n")
+    adb.uninstall_app(phone_config(), "com.example.app")
+    assert "pm uninstall --user 0 com.example.app" in calls[0][-1]
+
+
+def test_uninstall_app_keep_data_adds_the_k_flag(monkeypatch):
+    calls = fake_adb(monkeypatch, "Success\n")
+    adb.uninstall_app(phone_config(), "com.example.app", keep_data=True)
+    assert "pm uninstall --user 0 -k com.example.app" in calls[0][-1]
+
+
+def test_uninstall_app_rejects_an_empty_package_id():
+    with pytest.raises(IntegrationError):
+        adb.uninstall_app(phone_config(), "")
+
+
+# --------------------------------------------------------------- file transfer
+def test_push_file_rejects_a_missing_local_file(tmp_path):
+    with pytest.raises(IntegrationError):
+        adb.push_file(phone_config(), tmp_path / "nope.txt", "/sdcard/Download")
+
+
+def test_push_file_builds_expected_argv_and_returns_remote_path(monkeypatch, tmp_path):
+    local = tmp_path / "hello.txt"
+    local.write_text("hi")
+    calls = fake_adb(monkeypatch, "")
+
+    remote = adb.push_file(phone_config(), local, "/sdcard/Download")
+
+    assert calls[0][-3:] == ["push", str(local), "/sdcard/Download/hello.txt"]
+    assert remote == "/sdcard/Download/hello.txt"
+
+
+def test_push_file_raises_speakably_on_failure(monkeypatch, tmp_path):
+    local = tmp_path / "hello.txt"
+    local.write_text("hi")
+    fake_adb(monkeypatch, "", returncode=1, stderr="remote object does not exist")
+    with pytest.raises(IntegrationError):
+        adb.push_file(phone_config(), local, "/sdcard/Nonexistent")
+
+
+def test_list_remote_dir_returns_the_lines(monkeypatch):
+    fake_adb(monkeypatch, "file1.txt\nfile2.txt\n")
+    assert adb.list_remote_dir(phone_config(), "/sdcard/Download") == ["file1.txt", "file2.txt"]
+
+
+def test_list_remote_dir_surfaces_a_real_error_unlike_list_remote(monkeypatch):
+    """Distinct from the private `_list_remote`, which swallows errors."""
+    fake_adb(monkeypatch, "", returncode=1, stderr="No such file or directory")
+    with pytest.raises(IntegrationError):
+        adb.list_remote_dir(phone_config(), "/sdcard/Nonexistent")
+
+
+def test_delete_remote_file_quotes_a_path_with_a_space(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.delete_remote_file(phone_config(), "/sdcard/Download/a file.txt")
+    assert "rm '/sdcard/Download/a file.txt'" in calls[0][-1]
+
+
+def test_delete_remote_file_rejects_an_empty_path():
+    with pytest.raises(IntegrationError):
+        adb.delete_remote_file(phone_config(), "   ")
+
+
+# ----------------------------------------------------------------- contacts
+def test_list_contacts_with_no_query_returns_everything(monkeypatch):
+    fake_adb(monkeypatch, (
+        "Row: 0 display_name=Alice, data1=9000000000\n"
+        "Row: 1 display_name=Bob, data1=9111111111\n"
+    ))
+    result = adb.list_contacts(phone_config())
+    assert ("Alice", "9000000000") in result
+    assert ("Bob", "9111111111") in result
+
+
+def test_list_contacts_with_a_query_delegates_to_find_contact(monkeypatch):
+    fake_adb(monkeypatch, "Row: 0 display_name=Alice, data1=9000000000\n")
+    assert adb.list_contacts(phone_config(), query="ali") == [("Alice", "9000000000")]
+
+
+def _contact_write_routes(insert_phone_output="\n", delete_output="\n", verify_row=None):
+    return [
+        ("content insert --uri content://com.android.contacts/raw_contacts", "\n"),
+        ("content query --uri content://com.android.contacts/raw_contacts", "Row: 0 _id=42\n"),
+        ("mimetype:s:vnd.android.cursor.item/name", "\n"),
+        ("mimetype:s:vnd.android.cursor.item/phone_v2", insert_phone_output),
+        ("content delete --uri content://com.android.contacts/raw_contacts/42", delete_output),
+        ("content://com.android.contacts/data/phones",
+         verify_row if verify_row is not None else "Row: 0 display_name=Alice, data1=9000000000\n"),
+    ]
+
+
+def test_add_contact_happy_path_does_not_raise(monkeypatch):
+    _routed_adb(monkeypatch, _contact_write_routes())
+    adb.add_contact(phone_config(), "Alice", "9000000000")
+
+
+def test_add_contact_rejects_an_empty_name():
+    with pytest.raises(IntegrationError):
+        adb.add_contact(phone_config(), "   ", "9000000000")
+
+
+def test_add_contact_rejects_an_empty_number():
+    with pytest.raises(IntegrationError):
+        adb.add_contact(phone_config(), "Alice", "   ")
+
+
+def test_add_contact_raises_when_number_does_not_read_back_correctly(monkeypatch):
+    _routed_adb(monkeypatch, _contact_write_routes(
+        verify_row="Row: 0 display_name=Alice, data1=1111111111\n"
+    ))
+    with pytest.raises(IntegrationError) as excinfo:
+        adb.add_contact(phone_config(), "Alice", "9000000000")
+    assert "did not read back correctly" in str(excinfo.value)
+
+
+def test_add_contact_cleans_up_on_partial_failure(monkeypatch):
+    calls = _routed_adb(monkeypatch, _contact_write_routes(
+        insert_phone_output="error: insert rejected"
+    ))
+    with pytest.raises(IntegrationError) as excinfo:
+        adb.add_contact(phone_config(), "Alice", "9000000000")
+    assert "the partial contact was removed" in str(excinfo.value)
+    assert any("content delete" in c[-1] for c in calls)
+
+
+def test_add_contact_reports_honestly_when_cleanup_also_fails(monkeypatch):
+    _routed_adb(monkeypatch, _contact_write_routes(
+        insert_phone_output="error: insert rejected",
+        delete_output="error: delete failed",
+    ))
+    with pytest.raises(IntegrationError) as excinfo:
+        adb.add_contact(phone_config(), "Alice", "9000000000")
+    assert "check the phone's Contacts app" in str(excinfo.value)
+
+
+def test_add_contact_invalidates_the_contacts_cache(monkeypatch):
+    """A contact just added must be visible to find_contact/call_contact
+    immediately, not after the 10-minute cache TTL."""
+    adb._contacts_cached["adb|"] = (
+        __import__("time").time(), {"9000000000": ("Someone Stale", "9000000000")}
+    )
+    _routed_adb(monkeypatch, _contact_write_routes())
+    adb.add_contact(phone_config(), "Alice", "9000000000")
+    # The cache was invalidated and re-primed by the verification read —
+    # it now reflects the freshly queried contacts, not the stale entry.
+    assert adb._contacts_cached["adb|"][1]["9000000000"] == ("Alice", "9000000000")
+
+
+# ------------------------------------------------------------- device settings
+def test_set_wifi_uses_cmd_not_the_deprecated_svc(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.set_wifi(phone_config(), True)
+    assert "cmd -w wifi set-wifi-enabled enabled" in calls[0][-1]
+
+
+def test_set_wifi_disabled(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.set_wifi(phone_config(), False)
+    assert "cmd -w wifi set-wifi-enabled disabled" in calls[0][-1]
+
+
+def test_set_bluetooth_reports_confirmed_state(monkeypatch):
+    _routed_adb(monkeypatch, [
+        ("svc bluetooth enable", "\n"),
+        ("settings get global bluetooth_on", "1\n"),
+    ])
+    assert adb.set_bluetooth(phone_config(), True) is True
+
+
+def test_set_bluetooth_reports_unconfirmed_state_honestly(monkeypatch):
+    """The Android 12+ case: the command is issued, but the phone never
+    actually changed state."""
+    _routed_adb(monkeypatch, [
+        ("svc bluetooth enable", "\n"),
+        ("settings get global bluetooth_on", "0\n"),
+    ])
+    assert adb.set_bluetooth(phone_config(), True) is False
+
+
+def test_set_airplane_mode_sends_setting_then_broadcast(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.set_airplane_mode(phone_config(), True)
+    assert "settings put global airplane_mode_on 1" in calls[0][-1]
+    assert "AIRPLANE_MODE" in calls[1][-1]
+    assert "--ez state true" in calls[1][-1]
+
+
+def _disconnected_after_setting(monkeypatch):
+    def run(args, **kwargs):
+        command = args[-1]
+        if "airplane_mode_on" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="device offline")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+
+def test_set_airplane_mode_treats_disconnect_as_soft_success_over_wireless(monkeypatch):
+    _disconnected_after_setting(monkeypatch)
+    # Should not raise: enabling airplane mode, wireless configured, the
+    # broadcast call looking disconnected is the expected shape of "it worked".
+    adb.set_airplane_mode(phone_config(wireless_address="1.2.3.4:5555"), True)
+
+
+def test_set_airplane_mode_still_raises_when_disabling(monkeypatch):
+    _disconnected_after_setting(monkeypatch)
+    with pytest.raises(IntegrationError):
+        adb.set_airplane_mode(phone_config(wireless_address="1.2.3.4:5555"), False)
+
+
+def test_set_airplane_mode_still_raises_with_no_wireless_address(monkeypatch):
+    _disconnected_after_setting(monkeypatch)
+    with pytest.raises(IntegrationError):
+        adb.set_airplane_mode(phone_config(wireless_address=""), True)
+
+
+def test_music_volume_range_parses_the_reported_range(monkeypatch):
+    fake_adb(monkeypatch, "volume is 8 in range [0..15]\n")
+    assert adb._music_volume_range(phone_config()) == (8, 15)
+
+
+def test_music_volume_range_falls_back_on_an_unexpected_format(monkeypatch):
+    fake_adb(monkeypatch, "something unexpected\n")
+    assert adb._music_volume_range(phone_config()) == (0, 15)
+
+
+def test_set_volume_percent_scales_to_the_devices_range(monkeypatch):
+    def run(args, **kwargs):
+        command = args[-1]
+        if "--get" in command:
+            return SimpleNamespace(returncode=0, stdout="volume is 5 in range [0..20]\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    calls = []
+
+    def recording_run(args, **kwargs):
+        calls.append(args)
+        return run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+    adb.set_volume_percent(phone_config(), 50)
+
+    assert "--set 10" in calls[-1][-1]  # 50% of max 20
+
+
+def test_set_volume_percent_rejects_out_of_range_values():
+    with pytest.raises(IntegrationError):
+        adb.set_volume_percent(phone_config(), 150)
+
+
+def test_set_brightness_percent_forces_manual_mode_before_setting_the_level(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.set_brightness_percent(phone_config(), 50)
+    assert "screen_brightness_mode 0" in calls[0][-1]
+    assert "screen_brightness 128" in calls[1][-1]
+
+
+def test_set_brightness_percent_rejects_out_of_range_values():
+    with pytest.raises(IntegrationError):
+        adb.set_brightness_percent(phone_config(), -1)
+
+
+def test_reboot_uses_the_host_level_command_not_shell(monkeypatch):
+    calls = fake_adb(monkeypatch, "")
+    adb.reboot(phone_config())
+    assert calls[0][-1] == "reboot"
+    assert "shell" not in calls[0]
+
+
+# --------------------------------------------------------------- notifications
+def test_notifications_parses_multiple_records(monkeypatch):
+    raw = (
+        "NotificationRecord(key=0|com.whatsapp|0|null|10062|...)\n"
+        "  pkg=com.whatsapp\n"
+        "  android.title=String (John Doe)\n"
+        "  android.text=String (Hey, are you free?)\n"
+        "  postTime=1700000000000\n"
+        "NotificationRecord(key=1|com.android.systemui|...)\n"
+        "  pkg=com.android.systemui\n"
+        "  android.title=String (Low battery)\n"
+        "  android.text=String (15% remaining)\n"
+        "  postTime=1700000001000\n"
+    )
+    fake_adb(monkeypatch, raw)
+    found = adb.notifications(phone_config())
+    assert {n.package for n in found} == {"com.whatsapp", "com.android.systemui"}
+    assert any(n.title == "John Doe" and n.text == "Hey, are you free?" for n in found)
+
+
+def test_notifications_skips_a_malformed_record(monkeypatch):
+    raw = (
+        "NotificationRecord(key=0|weird)\n"
+        "  no pkg field here at all\n"
+        "NotificationRecord(key=1|com.example.app)\n"
+        "  pkg=com.example.app\n"
+        "  android.title=String (Hello)\n"
+        "  postTime=1700000000000\n"
+    )
+    fake_adb(monkeypatch, raw)
+    found = adb.notifications(phone_config())
+    assert len(found) == 1
+    assert found[0].package == "com.example.app"
+
+
+def test_notifications_empty_output_returns_no_records(monkeypatch):
+    fake_adb(monkeypatch, "")
+    assert adb.notifications(phone_config()) == []
+
+
+def test_notification_spoken_form_includes_title_and_text():
+    note = adb.Notification(package="com.whatsapp", title="Alice", text="hi", when=None)
+    assert "Alice" in note.spoken() and "hi" in note.spoken()
+
+
+# -------------------------------------------------------------------- location
+def test_last_location_prefers_fused_over_other_providers(monkeypatch):
+    raw = (
+        "Last Known Locations:\n"
+        "  gps: Location[gps 12.900000,77.590000 hAcc=10.0]\n"
+        "  network: Location[network 12.950000,77.600000 hAcc=50.0]\n"
+        "  fused: Location[fused 12.910000,77.595000 hAcc=15.0]\n"
+    )
+    fake_adb(monkeypatch, raw)
+    location = adb.last_location(phone_config())
+    assert location.provider == "fused"
+    assert location.latitude == 12.91
+    assert location.longitude == 77.595
+
+
+def test_last_location_returns_none_when_nothing_is_cached(monkeypatch):
+    fake_adb(monkeypatch, "Last Known Locations:\n")
+    assert adb.last_location(phone_config()) is None
+
+
+def test_location_spoken_form_reports_coordinates():
+    location = adb.Location(provider="gps", latitude=12.9, longitude=77.6)
+    spoken = location.spoken()
+    assert "12.90000" in spoken and "77.60000" in spoken
+
+
+# ------------------------------------------------------------------- raw shell
+def test_run_shell_raises_not_configured_when_disabled():
+    from peter.core.errors import NotConfiguredError
+
+    with pytest.raises(NotConfiguredError):
+        adb.run_shell(phone_config(raw_shell_enabled=False), "ls")
+
+
+def test_run_shell_does_not_raise_on_a_nonzero_exit_code(monkeypatch):
+    fake_adb(monkeypatch, output="", returncode=1, stderr="no matches")
+    result = adb.run_shell(phone_config(raw_shell_enabled=True), "grep foo bar.txt")
+    assert "[exit 1]" in result
+    assert "no matches" in result
+
+
+def test_run_shell_does_not_treat_the_word_error_as_a_failure(monkeypatch):
+    fake_adb(monkeypatch, output="error: this is actually fine output\n", returncode=0)
+    result = adb.run_shell(
+        phone_config(raw_shell_enabled=True), "echo 'error: this is actually fine output'"
+    )
+    assert "[exit 0]" in result
+    assert "error: this is actually fine output" in result
+
+
+def test_run_shell_retries_once_on_a_disconnected_looking_failure(monkeypatch):
+    responses = [
+        SimpleNamespace(returncode=1, stdout="", stderr="device offline"),
+        SimpleNamespace(returncode=0, stdout="connected to 1.2.3.4:5555", stderr=""),
+        SimpleNamespace(returncode=0, stdout="ok output", stderr=""),
+    ]
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return responses.pop(0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(adb, "available", lambda cfg: True)
+
+    cfg = phone_config(raw_shell_enabled=True, wireless_address="1.2.3.4:5555")
+    result = adb.run_shell(cfg, "echo hi")
+
+    assert "ok output" in result
+    assert len(calls) == 3
+
+
+def test_run_shell_does_not_quote_the_command(monkeypatch):
+    """The explicit, consented-to nature of this tool — see run_shell's
+    docstring for why every other function in this module quotes free text
+    and this one deliberately does not."""
+    calls = fake_adb(monkeypatch, "")
+    adb.run_shell(phone_config(raw_shell_enabled=True), "echo 'still has quotes'")
+    assert calls[0][-1] == "echo 'still has quotes'"
+
+
+# --------------------------------------------------------- PhoneConfig default
+def test_phone_config_raw_shell_defaults_to_false():
+    from peter.core.config import PhoneConfig
+
+    assert PhoneConfig().raw_shell_enabled is False
+
+
+# ================================================================= tool layer
+# ------------------------------------------------------- app management tools
+def test_list_phone_apps_tool_reports_packages(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "list_apps", lambda cfg, third_party_only=True: ["com.example.app"])
+    assert "com.example.app" in registry.get_record("list_phone_apps").raw_fn()
+
+
+def test_list_phone_apps_tool_reports_none_found(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "list_apps", lambda cfg, third_party_only=True: [])
+    assert "No apps found" in registry.get_record("list_phone_apps").raw_fn()
+
+
+def test_launch_phone_app_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "launch_app", lambda cfg, package: None)
+    result = registry.get_record("launch_phone_app").raw_fn(package="com.spotify.music")
+    assert "com.spotify.music" in result
+
+
+def test_uninstall_phone_app_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "uninstall_app", lambda cfg, package, keep_data=False: None)
+    result = registry.get_record("uninstall_phone_app").raw_fn(package="com.example.app")
+    assert "com.example.app" in result
+
+
+def test_uninstall_phone_app_is_in_the_confirm_standing_rules(container):
+    assert container.config.policy.standing_rules.get("uninstall_phone_app") == "confirm"
+
+
+# ------------------------------------------------------------ file transfer tools
+def test_push_file_to_phone_tool_reports_the_remote_path(container, monkeypatch, tmp_path):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(
+        adb, "push_file", lambda cfg, local_path, remote_dir: f"{remote_dir}/x.txt"
+    )
+    result = registry.get_record("push_file_to_phone").raw_fn(local_path=str(tmp_path / "x.txt"))
+    assert "/sdcard/Download/x.txt" in result
+
+
+def test_list_phone_files_tool_reports_an_empty_directory(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "list_remote_dir", lambda cfg, remote_dir: [])
+    result = registry.get_record("list_phone_files").raw_fn(remote_dir="/sdcard/Download")
+    assert "empty" in result
+
+
+def test_delete_phone_file_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "delete_remote_file", lambda cfg, remote_path: None)
+    result = registry.get_record("delete_phone_file").raw_fn(remote_path="/sdcard/Download/x.txt")
+    assert "Deleted" in result
+
+
+def test_delete_phone_file_is_in_the_confirm_standing_rules(container):
+    assert container.config.policy.standing_rules.get("delete_phone_file") == "confirm"
+
+
+# ------------------------------------------------------------------ contacts tools
+def test_list_phone_contacts_tool_reports_matches(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "list_contacts", lambda cfg, query="": [("Alice", "9000000000")])
+    result = registry.get_record("list_phone_contacts").raw_fn()
+    assert "Alice" in result and "9000000000" in result
+
+
+def test_add_phone_contact_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "add_contact", lambda cfg, name, number: None)
+    result = registry.get_record("add_phone_contact").raw_fn(name="Alice", number="9000000000")
+    assert "Alice" in result
+
+
+def test_add_phone_contact_tool_reports_error_speakably(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    def boom(cfg, name, number):
+        raise IntegrationError(
+            "could not finish creating the contact; the partial contact was removed",
+            service="phone",
+        )
+
+    monkeypatch.setattr(adb, "add_contact", boom)
+    result = registry.get_record("add_phone_contact").raw_fn(name="Alice", number="9000000000")
+    assert "Something went wrong" in result
+
+
+# ------------------------------------------------------------- device settings tools
+def test_set_phone_wifi_tool_reports_the_new_state(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "set_wifi", lambda cfg, enabled: None)
+    assert "on" in registry.get_record("set_phone_wifi").raw_fn(enabled=True)
+
+
+def test_set_phone_bluetooth_tool_reports_confirmed_change(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "set_bluetooth", lambda cfg, enabled: True)
+    result = registry.get_record("set_phone_bluetooth").raw_fn(enabled=True)
+    assert "turned on" in result
+
+
+def test_set_phone_bluetooth_tool_reports_an_unconfirmed_change_honestly(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "set_bluetooth", lambda cfg, enabled: False)
+    result = registry.get_record("set_phone_bluetooth").raw_fn(enabled=True)
+    assert "did not confirm" in result
+
+
+def test_set_phone_airplane_mode_tool_flags_the_wireless_disconnect_risk(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "set_airplane_mode", lambda cfg, enabled: None)
+    monkeypatch.setattr(container.config.integrations.phone, "wireless_address", "1.2.3.4:5555")
+    result = registry.get_record("set_phone_airplane_mode").raw_fn(enabled=True)
+    assert "disconnect" in result.lower()
+
+
+def test_set_phone_airplane_mode_is_in_the_confirm_standing_rules(container):
+    assert container.config.policy.standing_rules.get("set_phone_airplane_mode") == "confirm"
+
+
+def test_set_phone_volume_tool_reports_the_percent(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "set_volume_percent", lambda cfg, percent: None)
+    assert "50%" in registry.get_record("set_phone_volume").raw_fn(percent=50)
+
+
+def test_set_phone_brightness_tool_reports_the_percent(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "set_brightness_percent", lambda cfg, percent: None)
+    assert "70%" in registry.get_record("set_phone_brightness").raw_fn(percent=70)
+
+
+def test_reboot_phone_tool_reports_success(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "reboot", lambda cfg: None)
+    assert "Rebooting" in registry.get_record("reboot_phone").raw_fn()
+
+
+def test_reboot_phone_is_in_the_confirm_standing_rules(container):
+    assert container.config.policy.standing_rules.get("reboot_phone") == "confirm"
+
+
+# --------------------------------------------------- notifications/location tools
+def test_read_phone_notifications_tool_reports_none_found(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "notifications", lambda cfg, limit=20: [])
+    assert "No notifications" in registry.get_record("read_phone_notifications").raw_fn()
+
+
+def test_read_phone_notifications_tool_reports_found_notifications(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    note = adb.Notification(package="com.whatsapp", title="Alice", text="hi", when=None)
+    monkeypatch.setattr(adb, "notifications", lambda cfg, limit=20: [note])
+    result = registry.get_record("read_phone_notifications").raw_fn()
+    assert "Alice" in result and "hi" in result
+
+
+def test_phone_location_tool_reports_no_cached_location(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "last_location", lambda cfg: None)
+    assert "No location" in registry.get_record("phone_location").raw_fn()
+
+
+def test_phone_location_tool_reports_a_found_location(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    loc = adb.Location(provider="fused", latitude=12.9, longitude=77.6)
+    monkeypatch.setattr(adb, "last_location", lambda cfg: loc)
+    result = registry.get_record("phone_location").raw_fn()
+    assert "12.90000" in result
+
+
+# ------------------------------------------------------------------- raw shell tool
+def test_run_phone_shell_command_tool_rejects_an_empty_command(container):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    assert "Give a shell command" in registry.get_record("run_phone_shell_command").raw_fn(command="  ")
+
+
+def test_run_phone_shell_command_tool_reports_the_output(container, monkeypatch):
+    from peter.agent import registry
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    monkeypatch.setattr(adb, "run_shell", lambda cfg, command, timeout=None: "[exit 0]\nok")
+    result = registry.get_record("run_phone_shell_command").raw_fn(command="echo ok")
+    assert "[exit 0]" in result
+
+
+def test_run_phone_shell_command_tool_reports_disabled_speakably(container, monkeypatch):
+    from peter.agent import registry
+    from peter.core.errors import NotConfiguredError
+
+    registry.reset_for_tests()
+    from peter.skills.phone import tools as phone_tools  # noqa: F401
+
+    def boom(cfg, command, timeout=None):
+        raise NotConfiguredError(
+            "phone", "Set integrations.phone.raw_shell_enabled to true in config.yml."
+        )
+
+    monkeypatch.setattr(adb, "run_shell", boom)
+    result = registry.get_record("run_phone_shell_command").raw_fn(command="ls")
+    assert "raw_shell_enabled" in result
+
+
+def test_run_phone_shell_command_is_in_the_confirm_standing_rules(container):
+    assert container.config.policy.standing_rules.get("run_phone_shell_command") == "confirm"

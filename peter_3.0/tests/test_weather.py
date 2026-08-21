@@ -163,7 +163,7 @@ def test_get_weather_tool_reports_the_conditions(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import weather_tools  # noqa: F401
+    from peter.skills.weather import tools as weather_tools  # noqa: F401
 
     monkeypatch.setattr(weather, "current", lambda cfg, location_override=None: "sunny")
 
@@ -174,7 +174,7 @@ def test_get_weather_tool_passes_through_a_location_override(container, monkeypa
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import weather_tools  # noqa: F401
+    from peter.skills.weather import tools as weather_tools  # noqa: F401
 
     seen = {}
     monkeypatch.setattr(
@@ -191,7 +191,7 @@ def test_get_weather_tool_reports_an_error_speakably(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import weather_tools  # noqa: F401
+    from peter.skills.weather import tools as weather_tools  # noqa: F401
 
     def boom(cfg, location_override=None):
         raise NotConfiguredError("weather", "Set integrations.weather.location.")

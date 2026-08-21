@@ -81,6 +81,7 @@ class GeminiProvider(LLMProvider):
         cache_ttl_seconds: int = 900,
         cache_min_tokens: int = 4096,
         fallbacks: dict[str, list[str]] | None = None,
+        timeout: float = 60.0,
     ):
         self.auto = model.strip().lower() == "auto"
         # `self.model` (on the base class) is what usage/cost tracking and
@@ -130,8 +131,17 @@ class GeminiProvider(LLMProvider):
             self._client = client
         else:
             from google import genai
+            from google.genai import types
 
-            self._client = genai.Client(api_key=api_key or None)
+            # google-genai passes timeout=None straight through to httpx,
+            # which treats that as "no timeout" rather than "use a default"
+            # — unlike anthropic/openai, which default to a sane ~10 minutes
+            # on their own. Left unset, a slow response hangs indefinitely
+            # with nothing to raise and nothing for call_with_retry to catch.
+            self._client = genai.Client(
+                api_key=api_key or None,
+                http_options=types.HttpOptions(timeout=int(timeout * 1000)),
+            )
 
     # ------------------------------------------------------------- history
     def reset(self) -> None:
@@ -218,6 +228,8 @@ class GeminiProvider(LLMProvider):
                         "gemini fallback: %s unavailable, trying %s",
                         self.model, candidate,
                     )
+                    if self.on_fallback:
+                        self.on_fallback(self.model, candidate)
                 else:
                     log.info("gemini auto-routing: %s -> %s (%s)",
                              self.model, candidate, self.last_route_reason)

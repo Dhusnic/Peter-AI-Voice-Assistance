@@ -239,6 +239,7 @@ class Peter:
         self.container.speaker = self.speaker
         self.brain.progress_hook = reporter.on_progress
         self.brain.retry_hook = reporter.retrying
+        self.brain.fallback_hook = reporter.switching_model
 
         # A confirmation prompt reads stdin while the spinner is still
         # animating — both redraw the same terminal line, which mangles the
@@ -268,12 +269,21 @@ class Peter:
 
     # ------------------------------------------------------------ voice mode
     def run_voice(self) -> None:
+        from rich.console import Console
+
         from peter.ui.confirm import VoiceConfirmer
         from peter.ui.tray import Tray
         from peter.voice.audio import Microphone
         from peter.voice.stt import Transcriber
         from peter.voice.tts import Speaker
         from peter.voice.wake import WakeWordDetector
+
+        # Same Console configure_logging() gave RichHandler, for the same
+        # reason run_text() shares it: a log line mid-print must not garble
+        # what's on screen. This is purely a terminal transcript of the voice
+        # session — the mic/speaker are the real interface — so it stays
+        # print-only and never blocks on input the way text mode's confirmer does.
+        self.console = self.console or Console()
 
         try:
             self.speaker = Speaker()
@@ -312,7 +322,12 @@ class Peter:
         self.tray.start()
 
         log.info("listening for the wake word (%s)", self.detector.model_name)
-        self.speaker.say(f"{self.config.app.assistant_name} here.")
+        self.console.print(
+            f"[dim]listening for the wake word ({self.detector.model_name})[/dim]"
+        )
+        greeting = f"{self.config.app.assistant_name} here."
+        self._print_reply(greeting)
+        self.speaker.say(greeting)
 
         while not self.stopping.is_set():
             try:
@@ -348,6 +363,7 @@ class Peter:
         perf.reset_phases()
         self.tray.set_state("listening")
         self.mic.flush()
+        self.console.print("[dim]● listening…[/dim]")
 
         ok = True
         try:
@@ -369,12 +385,15 @@ class Peter:
                 reply = "Didn't catch that."
             else:
                 log.info("heard: %s", heard)
+                self.console.print(f"[bold cyan]you>[/bold cyan] {heard}")
                 self.tray.set_state("thinking")
+                self.console.print("[dim]● thinking…[/dim]")
                 with perf.phase("think"):
                     reply = self.handle(heard)
 
         self.tray.set_state("speaking")
         log.info("saying: %s", reply)
+        self._print_reply(reply)
         self.speaker.say(reply)
 
         # Blocks only until the first block of audio actually starts playing
@@ -395,6 +414,17 @@ class Peter:
         self.detector.reset()
         self.mic.flush()
         self.tray.set_state("idle")
+
+    def _print_reply(self, text: str) -> None:
+        """Echo the spoken reply to the terminal, same bordered-panel look
+        PrintSpeaker uses in text mode, so a voice session reads as a
+        transcript rather than a silent terminal next to talking audio."""
+        from rich.panel import Panel
+
+        self.console.print(
+            Panel(text, title=self.config.app.assistant_name, title_align="left",
+                  border_style="bright_cyan", padding=(0, 1))
+        )
 
     def _record_voice_perf(self, started: float, cpu_started: float, *, ok: bool) -> None:
         """Best-effort — mirrors PolicyGate._record_perf so wake-to-reply

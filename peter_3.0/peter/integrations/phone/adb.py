@@ -30,11 +30,21 @@ CLI at all (`Invalid column number`) even once the separator is fixed — the
 real column underneath is `data1`, the generic key-value slot
 `ContactsContract` uses for a phone-type row's number.
 
-Reading (SMS, calls, contacts, the screen) is unrestricted. Acting spans a
-much wider range now than "narrow" — calls, Spotify, alarms, a web page
-pushed to the phone's screen — but sending a text as you is still out of
-scope; see `peter/tools/phone_tools.py` for what each write-tier tool
-actually does and why.
+Reading (SMS, calls, contacts, the screen, notifications, location) is
+unrestricted. Acting spans app management, file transfer, contacts,
+device settings, calls, Spotify, alarms, and a raw `adb shell` escape
+hatch (`run_shell`, opt-in via `integrations.phone.raw_shell_enabled`) —
+but sending a text as you, and any form of tap/swipe/type UI automation,
+are still out of scope; see `peter/skills/phone/tools.py` for what each
+write-tier tool actually does and why.
+
+Several of the newer read functions (`notifications`, `last_location`) are
+explicitly best-effort: they parse unstructured `dumpsys` diagnostic text
+that can drift across Android versions and OEM skins, not a documented,
+stable API. `add_contact` (contact creation) is similarly best-effort for a
+different reason — some OEM sync adapters reject or mangle an
+account-less raw contact — and reads back what it wrote before declaring
+success rather than trusting the insert blindly.
 """
 
 from __future__ import annotations
@@ -50,7 +60,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from peter.core.config import PROJECT_ROOT
-from peter.core.errors import IntegrationError
+from peter.core.errors import IntegrationError, NotConfiguredError
 
 log = logging.getLogger(__name__)
 
@@ -239,7 +249,7 @@ def _contacts_cache(cfg) -> dict[str, tuple[str, str]]:
     saved at all, just means names do not resolve — SMS and call log reading
     do not depend on this succeeding.
     """
-    key = f"{_resolved_adb_path(cfg)}|{cfg.device_serial}"
+    key = _cache_key(cfg)
     cached = _contacts_cached.get(key)
     now = datetime.now().timestamp()
     if cached and now - cached[0] < _CONTACTS_TTL_SECONDS:
@@ -310,24 +320,169 @@ def find_contact(cfg, name: str) -> list[tuple[str, str]]:
     return list(dict.fromkeys(token_matches))
 
 
-def _exec(args: list[str], cfg, timeout: float | None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        args, capture_output=True, text=True,
-        timeout=timeout or cfg.timeout_seconds,
-        encoding="utf-8", errors="replace",
+def list_contacts(cfg, query: str = "") -> list[tuple[str, str]]:
+    """Saved contacts as (display name, number) pairs. Empty `query` returns
+    every saved contact; non-empty delegates to `find_contact`'s
+    substring/word matching."""
+    query = query.strip()
+    if query:
+        return find_contact(cfg, query)
+    return sorted(_contacts_cache(cfg).values())
+
+
+def _cache_key(cfg) -> str:
+    return f"{_resolved_adb_path(cfg)}|{cfg.device_serial}"
+
+
+def _create_raw_contact(cfg) -> str:
+    """Create an account-less ("local") raw contact and return its row id.
+
+    The `content` CLI does not report back the id of a row it just inserted,
+    so this queries for it immediately after — a race-prone heuristic (the
+    newest `account_type IS NULL` row) that is fine for a personal,
+    single-user phone with no concurrent contact edits, and not guaranteed
+    correct in general.
+    """
+    _run(
+        ["shell", "content insert --uri content://com.android.contacts/raw_contacts "
+                  "--bind account_type:s:null --bind account_name:s:null"],
+        cfg,
     )
+    raw = _run(
+        ["shell", "content query --uri content://com.android.contacts/raw_contacts "
+                  '--projection _id --where "account_type IS NULL" --sort "_id DESC"'],
+        cfg,
+    )
+    for row in _rows(raw):
+        match = _ROW.match(row.strip())
+        if not match:
+            continue
+        fields = dict(_FIELD.findall(match.group(1)))
+        row_id = _null(fields.get("_id"))
+        if row_id:
+            return row_id
+    raise IntegrationError("could not find the newly created contact", service="phone")
+
+
+def _delete_raw_contact_best_effort(cfg, raw_id: str) -> bool:
+    try:
+        _run(
+            ["shell", f"content delete --uri "
+                      f"content://com.android.contacts/raw_contacts/{raw_id}"],
+            cfg,
+        )
+        return True
+    except IntegrationError:
+        return False
+
+
+def add_contact(cfg, name: str, number: str) -> None:
+    """Create a new phone contact via the Contacts Provider's `content
+    insert` — the only reliable no-root path, and account-less ("local")
+    contacts are the most reliable variant of that.
+
+    Genuinely fragile in a way worth being honest about: some OEM builds
+    (Samsung, Xiaomi) run a sync adapter that can reject or silently mangle
+    an account-less raw contact. This always reads back what was actually
+    saved before declaring success, and best-effort cleans up a
+    half-written contact (name with no number, or vice versa) if a step
+    after the first one fails.
+    """
+    name = name.strip()
+    number = number.strip()
+    if not name:
+        raise IntegrationError("no contact name given", service="phone")
+    if not number:
+        raise IntegrationError("no contact number given", service="phone")
+
+    raw_id = _create_raw_contact(cfg)
+    try:
+        _run(
+            ["shell", "content insert --uri content://com.android.contacts/data "
+                      f"--bind raw_contact_id:i:{raw_id} "
+                      "--bind mimetype:s:vnd.android.cursor.item/name "
+                      f"--bind data1:s:{_quote(name)}"],
+            cfg,
+        )
+        _run(
+            ["shell", "content insert --uri content://com.android.contacts/data "
+                      f"--bind raw_contact_id:i:{raw_id} "
+                      "--bind mimetype:s:vnd.android.cursor.item/phone_v2 "
+                      f"--bind data1:s:{_quote(number)} --bind data2:i:2"],
+            cfg,
+        )
+    except IntegrationError:
+        cleaned_up = _delete_raw_contact_best_effort(cfg, raw_id)
+        state = (
+            "the partial contact was removed" if cleaned_up
+            else "could not clean up the partial contact — check the phone's Contacts app"
+        )
+        raise IntegrationError(
+            f"could not finish creating the contact; {state}", service="phone",
+        )
+
+    _contacts_cached.pop(_cache_key(cfg), None)
+    verify = find_contact(cfg, name)
+    if not any(_normalize_number(num) == _normalize_number(number) for _, num in verify):
+        raise IntegrationError(
+            f"the contact was written but did not read back correctly — "
+            f"check the phone's Contacts app for {name!r}",
+            service="phone",
+        )
+
+
+def _exec(
+    args: list[str], cfg, timeout: float | None, *, text: bool = True
+) -> subprocess.CompletedProcess:
+    kwargs: dict = dict(capture_output=True, timeout=timeout or cfg.timeout_seconds)
+    if text:
+        kwargs.update(text=True, encoding="utf-8", errors="replace")
+    return subprocess.run(args, **kwargs)
+
+
+def _output_text(result: subprocess.CompletedProcess) -> str:
+    """stdout+stderr as text, whether `result` came from a text-mode or
+    binary-mode run (`screenshot_bytes` is the one binary caller)."""
+    out, err = result.stdout, result.stderr
+    if isinstance(out, bytes):
+        out = out.decode("utf-8", "replace")
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", "replace")
+    return (out or "") + (err or "")
+
+
+def _retry_if_disconnected(
+    args: list[str], cfg, timeout: float | None,
+    result: subprocess.CompletedProcess, *, text: bool = True,
+) -> subprocess.CompletedProcess:
+    """Given a just-completed attempt, retry once through `adb connect` if it
+    looks like a dropped wireless session; otherwise return `result`
+    unchanged.
+
+    A wireless ADB session does not survive the phone leaving and rejoining
+    Wi-Fi, a reboot on either side, or wireless debugging itself being
+    toggled off and on — without this, every one of those would need `adb
+    connect` re-run by hand before the next command, which defeats the point
+    of not needing the cable at all. Shared by every function that talks to
+    the device directly (`_run`, `screenshot_bytes`, `_list_remote`,
+    `pull_latest_file`, and the new file/shell functions below) — previously
+    each duplicated this block inline.
+    """
+    if not _looks_disconnected(_output_text(result)):
+        return result
+    if not _connect_wireless(cfg):
+        return result
+    try:
+        return _exec(args, cfg, timeout, text=text)
+    except (subprocess.TimeoutExpired, OSError):
+        return result
 
 
 def _run(device_command: list[str], cfg, timeout: float | None = None) -> str:
     """Run one adb command, with the configured device selected.
 
-    If `integrations.phone.wireless_address` is set and the device turns out
-    to be disconnected, this retries once through `adb connect` before
-    giving up. A wireless ADB session does not survive the phone leaving and
-    rejoining Wi-Fi, a reboot on either side, or wireless debugging itself
-    being toggled off and on — without this, every one of those would need
-    `adb connect` re-run by hand before the next command, which defeats the
-    point of not needing the cable at all.
+    See `_retry_if_disconnected` for the wireless reconnect-and-retry this
+    goes through on a disconnect-shaped failure.
     """
     if not available(cfg):
         raise IntegrationError(
@@ -352,14 +507,10 @@ def _run(device_command: list[str], cfg, timeout: float | None = None) -> str:
     except OSError as exc:
         raise IntegrationError(f"could not run adb: {exc}", service="phone") from exc
 
-    output = (result.stdout or "") + (result.stderr or "")
-    if (result.returncode != 0 or "error:" in output.lower()) and _looks_disconnected(output):
-        if _connect_wireless(cfg):
-            try:
-                result = _exec(args, cfg, timeout)
-                output = (result.stdout or "") + (result.stderr or "")
-            except (subprocess.TimeoutExpired, OSError):
-                pass
+    output = _output_text(result)
+    if result.returncode != 0 or "error:" in output.lower():
+        result = _retry_if_disconnected(args, cfg, timeout, result)
+        output = _output_text(result)
 
     if result.returncode != 0 or "error:" in output.lower():
         raise IntegrationError(
@@ -388,6 +539,53 @@ def devices(cfg) -> list[tuple[str, str]]:
         if len(parts) >= 2:
             found.append((parts[0], parts[1]))
     return found
+
+
+# ------------------------------------------------------------ app management
+# Package-id only, deliberately — there is no reliable no-root way to resolve
+# a package id to the human-readable name the launcher shows (that needs
+# `aapt dump badging` against the APK, a desktop SDK tool with nothing
+# equivalent on-device). `list_apps` is how a caller finds the exact id to
+# pass to `launch_app`/`uninstall_app` rather than guessing one from a name.
+def list_apps(cfg, third_party_only: bool = True) -> list[str]:
+    """Installed package ids, sorted. Third-party (user-installed) only by
+    default — the full system package list is enormous and rarely what
+    "what apps do I have" means."""
+    command = "pm list packages -3" if third_party_only else "pm list packages"
+    raw = _run(["shell", command], cfg)
+    packages = [
+        line.strip()[len("package:"):]
+        for line in raw.splitlines()
+        if line.strip().startswith("package:")
+    ]
+    return sorted(packages)
+
+
+def launch_app(cfg, package: str) -> None:
+    """Launch an app by its exact package id. Uses a monkey launch
+    (`-c android.intent.category.LAUNCHER`), the same fallback
+    `launch_spotify` already uses for its no-query case — the exact launcher
+    activity name (needed for `am start -n pkg/.Activity`) isn't knowable
+    without inspecting the APK."""
+    package = package.strip()
+    if not package:
+        raise IntegrationError("no package id given", service="phone")
+    _run(
+        ["shell", f"monkey -p {_quote(package)} -c android.intent.category.LAUNCHER 1"],
+        cfg,
+    )
+
+
+def uninstall_app(cfg, package: str, keep_data: bool = False) -> None:
+    """Uninstall an app by package id. `--user 0` removes it from the
+    current user profile without root — this also works for pre-installed
+    apps a plain `pm uninstall` refuses to touch, though the APK itself
+    stays on the read-only system partition (true removal needs root)."""
+    package = package.strip()
+    if not package:
+        raise IntegrationError("no package id given", service="phone")
+    flag = " -k" if keep_data else ""
+    _run(["shell", f"pm uninstall --user 0{flag} {_quote(package)}"], cfg)
 
 
 def health(cfg) -> str:
@@ -493,9 +691,9 @@ def calls(cfg, since_minutes: int = 10080, limit: int = 20) -> list[Call]:
 def screenshot_bytes(cfg) -> bytes:
     """Raw PNG bytes of the phone's current screen.
 
-    Bypasses `_run`: that helper runs in text mode, which on Windows rewrites
-    line endings and would corrupt binary PNG data. `exec-out` (not `shell`)
-    is what keeps stdout as the raw command output instead of adb's own
+    Runs in binary mode (`text=False`): text mode rewrites line endings on
+    Windows and would corrupt binary PNG data. `exec-out` (not `shell`) is
+    what keeps stdout as the raw command output instead of adb's own
     text-oriented framing.
     """
     if not available(cfg):
@@ -512,7 +710,7 @@ def screenshot_bytes(cfg) -> bytes:
     args += ["exec-out", "screencap", "-p"]
 
     try:
-        result = subprocess.run(args, capture_output=True, timeout=cfg.timeout_seconds)
+        result = _exec(args, cfg, cfg.timeout_seconds, text=False)
     except subprocess.TimeoutExpired as exc:
         raise IntegrationError(
             "the phone did not answer in time", service="phone", recoverable=True
@@ -520,16 +718,11 @@ def screenshot_bytes(cfg) -> bytes:
     except OSError as exc:
         raise IntegrationError(f"could not run adb: {exc}", service="phone") from exc
 
-    stderr = result.stderr.decode("utf-8", "replace")
-    if (result.returncode != 0 or not result.stdout) and _looks_disconnected(stderr):
-        if _connect_wireless(cfg):
-            try:
-                result = subprocess.run(args, capture_output=True, timeout=cfg.timeout_seconds)
-                stderr = result.stderr.decode("utf-8", "replace")
-            except (subprocess.TimeoutExpired, OSError):
-                pass
+    if result.returncode != 0 or not result.stdout:
+        result = _retry_if_disconnected(args, cfg, cfg.timeout_seconds, result, text=False)
 
     if result.returncode != 0 or not result.stdout:
+        stderr = _output_text(result)
         raise IntegrationError(
             f"could not capture the phone screen: {stderr.strip()[:200]}",
             service="phone", user_action=_hint(stderr),
@@ -664,6 +857,99 @@ def dismiss_phone_alarm(cfg) -> None:
     _run(["shell", "am start -a android.intent.action.DISMISS_ALARM"], cfg)
 
 
+# ------------------------------------------------------------- device settings
+def set_wifi(cfg, enabled: bool) -> None:
+    """Toggle WiFi. Uses `cmd -w wifi set-wifi-enabled`, not the older `svc
+    wifi`, which is deprecated and unreliable from Android 10 onward."""
+    state = "enabled" if enabled else "disabled"
+    _run(["shell", f"cmd -w wifi set-wifi-enabled {state}"], cfg)
+
+
+def set_bluetooth(cfg, enabled: bool) -> bool:
+    """Toggle Bluetooth and report whether the phone actually confirmed the
+    change, rather than assuming success. There is no reliable silent
+    no-root way to toggle Bluetooth on Android 12+ — `svc bluetooth` is
+    issued regardless, but the result is read back so a caller can say
+    honestly when it did not take effect (commonly needs doing on-device on
+    newer Android)."""
+    _run(["shell", f"svc bluetooth {'enable' if enabled else 'disable'}"], cfg)
+    raw = _run(["shell", "settings get global bluetooth_on"], cfg)
+    return raw.strip() == ("1" if enabled else "0")
+
+
+def set_airplane_mode(cfg, enabled: bool) -> None:
+    """Toggle airplane mode. Two steps: the setting itself, then the
+    broadcast that makes the system act on it — the setting alone does not
+    apply it.
+
+    Real risk if `integrations.phone.wireless_address` is set: enabling
+    airplane mode can sever the wireless ADB session the instant it takes
+    effect, at which point the broadcast call fails in a way indistinguishable
+    from any other dropped connection. That specific case — enabling, over a
+    configured wireless address, broadcast fails looking disconnected — is
+    treated as a likely soft-success (the setting almost certainly did
+    apply) rather than a hard failure, since there is no way from this side
+    to tell "failed to apply" apart from "applied and cut the connection".
+    """
+    value = "1" if enabled else "0"
+    _run(["shell", f"settings put global airplane_mode_on {value}"], cfg)
+    state = "true" if enabled else "false"
+    try:
+        _run(
+            ["shell", "am broadcast -a android.intent.action.AIRPLANE_MODE "
+                      f"--ez state {state}"],
+            cfg,
+        )
+    except IntegrationError:
+        if enabled and (cfg.wireless_address or "").strip():
+            log.info(
+                "airplane mode broadcast failed while enabling over wireless "
+                "ADB — likely means it worked and cut the connection"
+            )
+            return
+        raise
+
+
+_VOLUME_RANGE = re.compile(r"volume is (\d+) in range \[(\d+)\.\.(\d+)\]")
+
+
+def _music_volume_range(cfg) -> tuple[int, int]:
+    """(current, max) for the music stream (stream 3). Falls back to a
+    conservative (0, 15) if the phone's reported format doesn't match what
+    was verified during development — better to under-scale a volume change
+    than raise on an unexpected format."""
+    raw = _run(["shell", "cmd media_session volume --stream 3 --get"], cfg)
+    match = _VOLUME_RANGE.search(raw)
+    if match:
+        return int(match.group(1)), int(match.group(3))
+    return 0, 15
+
+
+def set_volume_percent(cfg, percent: int) -> None:
+    """Set the phone's media (music) volume, as a 0-100 percent."""
+    if not (0 <= percent <= 100):
+        raise IntegrationError("percent must be 0-100", service="phone")
+    _, max_level = _music_volume_range(cfg)
+    level = round(max_level * percent / 100)
+    _run(["shell", f"cmd media_session volume --stream 3 --set {level}"], cfg)
+
+
+def set_brightness_percent(cfg, percent: int) -> None:
+    """Set screen brightness, as a 0-100 percent. Forces manual brightness
+    mode first — with adaptive/auto brightness on, an explicit value here
+    would otherwise be silently overridden a moment later."""
+    if not (0 <= percent <= 100):
+        raise IntegrationError("percent must be 0-100", service="phone")
+    level = round(255 * percent / 100)
+    _run(["shell", "settings put system screen_brightness_mode 0"], cfg)
+    _run(["shell", f"settings put system screen_brightness {level}"], cfg)
+
+
+def reboot(cfg) -> None:
+    """Reboot the phone. Host-level `adb reboot`, not `adb shell reboot`."""
+    _run(["reboot"], cfg, timeout=10)
+
+
 def _list_remote(cfg, remote_dir: str) -> list[str]:
     """Files in a phone directory, newest first. Empty (not an error) for a
     directory that does not exist — the caller tries several in turn."""
@@ -672,21 +958,11 @@ def _list_remote(cfg, remote_dir: str) -> list[str]:
         args += ["-s", cfg.device_serial]
     args += ["shell", f"ls -t {_quote(remote_dir)} 2>/dev/null"]
     try:
-        result = subprocess.run(
-            args, capture_output=True, text=True, timeout=cfg.timeout_seconds,
-            encoding="utf-8", errors="replace",
-        )
+        result = _exec(args, cfg, cfg.timeout_seconds)
     except (subprocess.TimeoutExpired, OSError):
         return []
     if result.returncode != 0:
-        if _looks_disconnected(result.stderr) and _connect_wireless(cfg):
-            try:
-                result = subprocess.run(
-                    args, capture_output=True, text=True, timeout=cfg.timeout_seconds,
-                    encoding="utf-8", errors="replace",
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                return []
+        result = _retry_if_disconnected(args, cfg, cfg.timeout_seconds, result)
         if result.returncode != 0:
             return []
     return [name.strip() for name in result.stdout.splitlines() if name.strip()]
@@ -726,14 +1002,16 @@ def pull_latest_file(cfg, remote_dirs: list[str], local_dir: pathlib.Path) -> pa
     args += ["pull", chosen_remote, str(local_path)]
 
     try:
-        result = subprocess.run(
-            args, capture_output=True, text=True, timeout=cfg.timeout_seconds * 3,
-            encoding="utf-8", errors="replace",
-        )
+        result = _exec(args, cfg, cfg.timeout_seconds * 3)
     except subprocess.TimeoutExpired as exc:
         raise IntegrationError(
             "the transfer timed out", service="phone", recoverable=True
         ) from exc
+    except OSError as exc:
+        raise IntegrationError(f"could not run adb: {exc}", service="phone") from exc
+
+    if result.returncode != 0:
+        result = _retry_if_disconnected(args, cfg, cfg.timeout_seconds * 3, result)
 
     if result.returncode != 0:
         raise IntegrationError(
@@ -741,6 +1019,68 @@ def pull_latest_file(cfg, remote_dirs: list[str], local_dir: pathlib.Path) -> pa
             service="phone",
         )
     return local_path
+
+
+def push_file(cfg, local_path: pathlib.Path, remote_dir: str) -> str:
+    """Copy a local file onto the phone. Returns the remote path written to.
+    Public shared-storage directories (`/sdcard/Download`, `/sdcard/Pictures`,
+    ...) work without root despite scoped storage — `adbd` runs as the
+    `shell` UID, which keeps broad storage access; `/data/data/<pkg>/...`
+    (app-private storage) does not, without root."""
+    local_path = pathlib.Path(local_path)
+    if not local_path.is_file():
+        raise IntegrationError(f"no such local file: {local_path}", service="phone")
+    if not available(cfg):
+        raise IntegrationError(
+            "adb is not installed, or not on PATH", service="phone",
+            user_action=(
+                "Install Android Platform Tools and add it to PATH, or set "
+                "integrations.phone.adb_path in config.yml."
+            ),
+        )
+    remote_path = f"{remote_dir.rstrip('/')}/{local_path.name}"
+
+    args = [_resolved_adb_path(cfg)]
+    if cfg.device_serial:
+        args += ["-s", cfg.device_serial]
+    args += ["push", str(local_path), remote_path]
+
+    try:
+        result = _exec(args, cfg, cfg.timeout_seconds * 3)
+    except subprocess.TimeoutExpired as exc:
+        raise IntegrationError(
+            "the transfer timed out", service="phone", recoverable=True
+        ) from exc
+    except OSError as exc:
+        raise IntegrationError(f"could not run adb: {exc}", service="phone") from exc
+
+    if result.returncode != 0:
+        result = _retry_if_disconnected(args, cfg, cfg.timeout_seconds * 3, result)
+
+    if result.returncode != 0:
+        raise IntegrationError(
+            f"could not push the file: {(result.stderr or result.stdout).strip()[:200]}",
+            service="phone",
+        )
+    return remote_path
+
+
+def list_remote_dir(cfg, remote_dir: str) -> list[str]:
+    """Files in a phone directory, for browsing. Unlike the private
+    `_list_remote` (which swallows errors while trying several candidate
+    directories in turn for a screenshot/voice-note pull), this surfaces a
+    real error for a directory that does not exist or is not readable."""
+    raw = _run(["shell", f"ls -la {_quote(remote_dir)}"], cfg)
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def delete_remote_file(cfg, remote_path: str) -> None:
+    """Delete one file on the phone. Never recursive (`rm`, not `rm -r`) —
+    keeps a single call's blast radius to exactly one file."""
+    remote_path = remote_path.strip()
+    if not remote_path:
+        raise IntegrationError("no remote path given", service="phone")
+    _run(["shell", f"rm {_quote(remote_path)}"], cfg)
 
 
 def latest_code(cfg) -> tuple[str, Sms] | None:
@@ -778,3 +1118,165 @@ def battery(cfg) -> str:
         return "The phone did not report a battery level."
     charging = " (charging)" if plugged == "2" else ""
     return f"Phone battery is at {level}%{charging}."
+
+
+# ---------------------------------------------------------------- notifications
+@dataclass(slots=True)
+class Notification:
+    package: str
+    title: str | None
+    text: str | None
+    when: datetime | None
+
+    def spoken(self) -> str:
+        stamp = f" ({self.when.strftime('%d %b %H:%M')})" if self.when else ""
+        heading = self.title or self.package
+        body = f": {self.text}" if self.text else ""
+        return f"{heading}{stamp}{body}"
+
+
+_NOTIF_PKG = re.compile(r"pkg=(\S+)")
+_NOTIF_TITLE = re.compile(r"android\.title=String\s*\((.*?)\)")
+_NOTIF_TEXT = re.compile(r"android\.text=String\s*\((.*?)\)")
+_NOTIF_WHEN = re.compile(r"postTime=(\d+)")
+
+
+def notifications(cfg, limit: int = 20) -> list[Notification]:
+    """Currently posted notifications, newest first — best-effort.
+    `dumpsys notification --noredact` is a diagnostic text dump, not a
+    stable schema; the exact field formatting can drift across Android
+    versions and OEM skins, so a record that doesn't parse is skipped
+    rather than failing the whole read. `--noredact` is required, or
+    title/text come back as placeholder text instead of the real content.
+    """
+    raw = _run(["shell", "dumpsys notification --noredact"], cfg)
+    found: list[Notification] = []
+    # A zero-width lookahead split, not `\n\s*NotificationRecord\b` split-and-
+    # drop-first: the very first record in the dump can sit at the start of
+    # the string with no preceding newline (no preamble text before it),
+    # which a newline-anchored split would silently drop.
+    for block in re.split(r"(?=NotificationRecord\()", raw):
+        if not block.startswith("NotificationRecord("):
+            continue
+        pkg_match = _NOTIF_PKG.search(block)
+        if not pkg_match:
+            continue
+        title_match = _NOTIF_TITLE.search(block)
+        text_match = _NOTIF_TEXT.search(block)
+        when_match = _NOTIF_WHEN.search(block)
+        when = None
+        if when_match:
+            try:
+                when = datetime.fromtimestamp(int(when_match.group(1)) / 1000)
+            except (ValueError, OSError, OverflowError):
+                pass
+        found.append(Notification(
+            package=pkg_match.group(1),
+            title=title_match.group(1) if title_match else None,
+            text=text_match.group(1) if text_match else None,
+            when=when,
+        ))
+
+    found.sort(key=lambda n: n.when or datetime.min, reverse=True)
+    return found[:limit]
+
+
+# -------------------------------------------------------------------- location
+@dataclass(slots=True)
+class Location:
+    provider: str
+    latitude: float
+    longitude: float
+    when: datetime | None = None
+    accuracy_meters: float | None = None
+
+    def spoken(self) -> str:
+        stamp = f", {self.when.strftime('%d %b %H:%M')}" if self.when else ""
+        return (
+            f"Last known location ({self.provider}{stamp}): "
+            f"{self.latitude:.5f}, {self.longitude:.5f}"
+        )
+
+
+_LOCATION_ROW = re.compile(r"Location\[(\w+)\s+([\-\d.]+),([\-\d.]+)[^\]]*\]")
+_LOCATION_PROVIDER_PRIORITY = {"fused": 0, "gps": 1, "network": 2, "passive": 3}
+
+
+def last_location(cfg) -> Location | None:
+    """Best-available cached location — not a live fix. `dumpsys location`
+    only reports whatever was last requested by some app; it can be stale by
+    hours, or empty entirely (e.g. right after a reboot, or on a phone that
+    has sat idle indoors). There is no non-root way to force a fresh GPS fix
+    through plain `adb shell`. Returns `None` (not an error) when nothing is
+    cached.
+    """
+    raw = _run(["shell", "dumpsys location"], cfg)
+    candidates = []
+    for match in _LOCATION_ROW.finditer(raw):
+        provider, lat, lon = match.groups()
+        try:
+            candidates.append((provider.lower(), float(lat), float(lon)))
+        except ValueError:
+            continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: _LOCATION_PROVIDER_PRIORITY.get(c[0], 99))
+    provider, lat, lon = candidates[0]
+    return Location(provider=provider, latitude=lat, longitude=lon)
+
+
+# ------------------------------------------------------------------- raw shell
+def run_shell(cfg, command: str, timeout: float | None = None) -> str:
+    """Run any `adb shell` command verbatim and return its output — the
+    escape hatch for anything the named phone functions above don't cover.
+
+    Deliberately does not reuse `_run`'s failure heuristic: `_run` treats a
+    nonzero exit code or the literal word "error:" in output as a command
+    failure, which is right for adb's own known-shape commands but wrong
+    for an arbitrary one — a command can legitimately return nonzero (a
+    `grep` with no match) or print "error" in perfectly good output. This
+    returns whatever happened, exit code included, and only raises for
+    genuine infrastructure failures (adb missing, timeout, cannot exec) —
+    transparency is the entire point of an unrestricted command.
+
+    No shell-quoting is applied to `command` — it is passed to the phone's
+    shell exactly as given. That is the explicit, consented-to nature of
+    this tool; see `_quote()` for why every other function in this module
+    quotes free text and this one deliberately does not.
+    """
+    if not cfg.raw_shell_enabled:
+        raise NotConfiguredError(
+            "phone",
+            "Set integrations.phone.raw_shell_enabled to true in "
+            "config.yml — this runs any shell command on the phone "
+            "verbatim, understand the risk before turning it on.",
+        )
+    if not available(cfg):
+        raise IntegrationError(
+            "adb is not installed, or not on PATH", service="phone",
+            user_action=(
+                "Install Android Platform Tools and add it to PATH, or set "
+                "integrations.phone.adb_path in config.yml."
+            ),
+        )
+
+    args = [_resolved_adb_path(cfg)]
+    if cfg.device_serial:
+        args += ["-s", cfg.device_serial]
+    args += ["shell", command]
+
+    try:
+        result = _exec(args, cfg, timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise IntegrationError(
+            "the phone did not answer in time", service="phone", recoverable=True
+        ) from exc
+    except OSError as exc:
+        raise IntegrationError(f"could not run adb: {exc}", service="phone") from exc
+
+    output = _output_text(result)
+    if _looks_disconnected(output):
+        result = _retry_if_disconnected(args, cfg, timeout, result)
+        output = _output_text(result)
+
+    return f"[exit {result.returncode}]\n{output.strip()}"

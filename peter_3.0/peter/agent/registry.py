@@ -158,34 +158,38 @@ def tool_manifest() -> str:
 # Tool modules, in import order. Adding a module here is the only wiring a new
 # capability needs — registration happens as an import side effect.
 TOOL_MODULES = (
-    "peter.tools.system",
-    "peter.tools.time_tools",
-    "peter.tools.focus_tools",
-    "peter.tools.memory_tools",
-    "peter.tools.mail_tools",
-    "peter.tools.calendar_tools",
-    "peter.tools.contacts_tools",
-    "peter.tools.keep_tools",
-    "peter.tools.briefing_tools",
-    "peter.tools.browser_tools",
-    "peter.tools.desktop_tools",
-    "peter.tools.llm_tools",
-    "peter.tools.vision_tools",
-    "peter.tools.watch_tools",
-    "peter.tools.workspace_tools",
-    "peter.tools.docs_tools",
-    "peter.tools.recorder_tools",
-    "peter.tools.dev_tools",
-    "peter.tools.telegram_tools",
-    "peter.tools.phone_tools",
-    "peter.tools.expense_tools",
-    "peter.tools.delivery_tools",
-    "peter.tools.weather_tools",
-    "peter.tools.routine_tools",
-    "peter.tools.news_tools",
-    "peter.tools.notes_tools",
-    "peter.tools.perf_tools",
-    "peter.tools.skill_tools",
+    "peter.skills.system.tools",
+    "peter.skills.time.tools",
+    "peter.skills.focus.tools",
+    "peter.skills.memory.tools",
+    "peter.skills.mail.tools",
+    "peter.skills.calendar.tools",
+    "peter.skills.contacts.tools",
+    "peter.skills.drive.tools",
+    "peter.skills.sheets.tools",
+    "peter.skills.gdocs.tools",
+    "peter.skills.keep.tools",
+    "peter.skills.briefing.tools",
+    "peter.skills.browser.tools",
+    "peter.skills.desktop.tools",
+    "peter.skills.llm.tools",
+    "peter.skills.vision.tools",
+    "peter.skills.price_watch.tools",
+    "peter.skills.workspace.tools",
+    "peter.skills.docs.tools",
+    "peter.skills.recorder.tools",
+    "peter.skills.dev.tools",
+    "peter.skills.telegram.tools",
+    "peter.skills.phone.tools",
+    "peter.skills.expenses.tools",
+    "peter.skills.deliveries.tools",
+    "peter.skills.weather.tools",
+    "peter.skills.maps.tools",
+    "peter.skills.routines.tools",
+    "peter.skills.news.tools",
+    "peter.skills.notes.tools",
+    "peter.skills.performance.tools",
+    "peter.skills.skills.tools",
 )
 
 # Modules whose tools cannot possibly succeed without credentials, and the
@@ -193,55 +197,63 @@ TOOL_MODULES = (
 # module listed here and not configured is pure cost: ~1,000 tokens per
 # request describing an action that can only fail.
 _REQUIRES = {
-    "peter.tools.mail_tools":
+    "peter.skills.mail.tools":
         lambda c: c.integrations.mail.enabled and c.secrets.has_mail,
-    "peter.tools.calendar_tools":
+    "peter.skills.calendar.tools":
         lambda c: c.integrations.google.enabled and c.secrets.has_google,
-    "peter.tools.contacts_tools":
+    "peter.skills.contacts.tools":
+        lambda c: c.integrations.google.enabled and c.secrets.has_google,
+    "peter.skills.drive.tools":
+        lambda c: c.integrations.google.enabled and c.secrets.has_google,
+    "peter.skills.sheets.tools":
+        lambda c: c.integrations.google.enabled and c.secrets.has_google,
+    "peter.skills.gdocs.tools":
         lambda c: c.integrations.google.enabled and c.secrets.has_google,
     # Off unless you've read the setup doc and opted in — see KeepConfig's
     # own docstring for why this integration defaults differently from
     # every other one here.
-    "peter.tools.keep_tools":
+    "peter.skills.keep.tools":
         lambda c: c.integrations.keep.enabled and c.secrets.has_keep,
-    "peter.tools.desktop_tools":
+    "peter.skills.desktop.tools":
         lambda c: c.integrations.desktop.enabled,
     # Needs a repository to look at; with none configured every one of these
     # can only answer "no repositories are configured".
-    "peter.tools.dev_tools":
+    "peter.skills.dev.tools":
         lambda c: c.integrations.dev.enabled and bool(c.integrations.dev.repos),
     # Needs both a token and somewhere to send to.
-    "peter.tools.telegram_tools":
+    "peter.skills.telegram.tools":
         lambda c: (c.integrations.telegram.enabled and c.secrets.has_telegram
                    and bool(c.integrations.telegram.allowed_chat_ids)),
     # Off unless USB debugging is deliberately set up.
-    "peter.tools.phone_tools":
+    "peter.skills.phone.tools":
         lambda c: c.integrations.phone.enabled,
-    "peter.tools.recorder_tools":
+    "peter.skills.recorder.tools":
         lambda c: c.integrations.recorder.enabled,
-    "peter.tools.watch_tools":
+    "peter.skills.price_watch.tools":
         lambda c: c.integrations.price_watch.enabled and c.integrations.browser.enabled,
-    "peter.tools.workspace_tools":
+    "peter.skills.workspace.tools":
         lambda c: c.integrations.workspace.enabled,
-    "peter.tools.docs_tools":
+    "peter.skills.docs.tools":
         lambda c: c.integrations.docs.enabled,
-    "peter.tools.vision_tools":
+    "peter.skills.vision.tools":
         lambda c: c.agent.vision.enabled,
     # Both read SMS over ADB, so neither can do anything without the phone
     # integration also switched on.
-    "peter.tools.expense_tools":
+    "peter.skills.expenses.tools":
         lambda c: c.integrations.expenses.enabled and c.integrations.phone.enabled,
-    "peter.tools.delivery_tools":
+    "peter.skills.deliveries.tools":
         lambda c: c.integrations.deliveries.enabled and c.integrations.phone.enabled,
-    "peter.tools.weather_tools":
+    "peter.skills.weather.tools":
         lambda c: c.integrations.weather.enabled,
+    "peter.skills.maps.tools":
+        lambda c: c.integrations.maps.enabled and c.secrets.has_maps,
     # A routine with no steps configured can only ever say so — same reasoning
     # as dev_tools needing at least one repo.
-    "peter.tools.routine_tools":
+    "peter.skills.routines.tools":
         lambda c: c.integrations.routines.enabled and bool(c.integrations.routines.defs),
-    "peter.tools.news_tools":
+    "peter.skills.news.tools":
         lambda c: c.integrations.news.enabled,
-    "peter.tools.notes_tools":
+    "peter.skills.notes.tools":
         lambda c: c.integrations.notes.enabled,
 }
 
@@ -300,5 +312,5 @@ def reset_for_tests() -> None:
     _REGISTRY.clear()
     skills.reset_for_tests()
     set_interceptor(None)
-    for name in [m for m in sys.modules if m.startswith("peter.tools")]:
+    for name in [m for m in sys.modules if m.startswith("peter.skills")]:
         del sys.modules[name]

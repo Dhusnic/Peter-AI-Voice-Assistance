@@ -31,7 +31,7 @@ def tool_filter_config(**kwargs):
 def test_register_and_get_skill():
     register_skill(SkillManifest(
         name="weather", version="1.0.0", description="Weather.",
-        module="peter.tools.weather_tools", tools=("get_weather",),
+        module="peter.skills.weather.tools", tools=("get_weather",),
     ))
     found = skills.get_skill("weather")
     assert found is not None
@@ -142,12 +142,12 @@ def test_skills_report_shows_enabled_and_not_configured(monkeypatch):
 def test_skills_report_lists_tools_and_permissions(monkeypatch):
     register_skill(SkillManifest(
         name="weather", version="1.0.0", description="Weather.",
-        module="peter.tools.weather_tools", permissions=("network",),
+        module="peter.skills.weather.tools", permissions=("network",),
         tools=("get_weather",),
     ))
     monkeypatch.setattr(
         "peter.agent.registry.usable_modules",
-        lambda config: ["peter.tools.weather_tools"],
+        lambda config: ["peter.skills.weather.tools"],
     )
 
     text = skills.skills_report(SimpleNamespace())
@@ -251,7 +251,8 @@ def test_tool_filter_config_defaults():
 # -------------------------------------------------------------------- tool
 def test_list_skills_tool_reports_registered_skills(container):
     registry.reset_for_tests()
-    from peter.tools import skill_tools, weather_tools  # noqa: F401
+    from peter.skills.skills import tools as skill_tools  # noqa: F401
+    from peter.skills.weather import tools as weather_tools  # noqa: F401
 
     result = registry.get_record("list_skills").raw_fn()
 
@@ -265,7 +266,7 @@ def test_list_skills_tool_omits_never_loaded_skills(container):
     docstring. Here only skill_tools itself is imported, so nothing else
     should appear."""
     registry.reset_for_tests()
-    from peter.tools import skill_tools  # noqa: F401
+    from peter.skills.skills import tools as skill_tools  # noqa: F401
 
     result = registry.get_record("list_skills").raw_fn()
 
@@ -279,7 +280,7 @@ def test_brain_sends_every_tool_when_filter_disabled(config, store):
     from peter.agent.brain import Brain
 
     registry.reset_for_tests()
-    from peter.tools import weather_tools  # noqa: F401
+    from peter.skills.weather import tools as weather_tools  # noqa: F401
 
     config.agent.tool_filter.enabled = False
     brain = Brain(memory=store, config=config, provider=SimpleNamespace())
@@ -293,8 +294,8 @@ def test_brain_filters_tools_when_enabled_and_matched(config, store):
     from peter.agent.brain import Brain
 
     registry.reset_for_tests()
-    from peter.tools import weather_tools  # noqa: F401
-    from peter.tools import mail_tools  # noqa: F401
+    from peter.skills.weather import tools as weather_tools  # noqa: F401
+    from peter.skills.mail import tools as mail_tools  # noqa: F401
 
     config.agent.tool_filter.enabled = True
     config.agent.tool_filter.always_include = []
@@ -312,7 +313,7 @@ def test_brain_falls_back_to_everything_on_no_match(config, store):
     from peter.agent.brain import Brain
 
     registry.reset_for_tests()
-    from peter.tools import weather_tools  # noqa: F401
+    from peter.skills.weather import tools as weather_tools  # noqa: F401
 
     config.agent.tool_filter.enabled = True
     brain = Brain(memory=store, config=config, provider=SimpleNamespace())

@@ -331,6 +331,9 @@ def _bare_peter():
     p.brain.usage_summary.return_value = "usage: n/a"
     p.handle = MagicMock(return_value="the reply")
     p.container = MagicMock()
+    p.console = MagicMock()
+    p.config = MagicMock()
+    p.config.app.assistant_name = "Peter"
     return p
 
 
@@ -425,6 +428,7 @@ def test_run_voice_falls_back_to_text_mode_when_speaker_fails_to_build(monkeypat
     p.transcriber = None
     p.detector = None
     p.container = MagicMock()
+    p.console = None
     p.run_text = MagicMock()
 
     class BoomSpeaker:
@@ -449,6 +453,7 @@ def test_run_voice_shuts_down_the_speaker_if_mic_fails_afterward(monkeypatch):
     p.transcriber = None
     p.detector = None
     p.container = MagicMock()
+    p.console = None
     p.run_text = MagicMock()
 
     fake_speaker = MagicMock()

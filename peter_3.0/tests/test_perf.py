@@ -250,7 +250,7 @@ def test_performance_report_tool_delegates(container, tmp_path):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import perf_tools  # noqa: F401
+    from peter.skills.performance import tools as perf_tools  # noqa: F401
 
     container.perf = PerfLog(tmp_path / "tool.db")
     container.perf.record("check_email", wall_ms=800, cpu_ms=3, wait_ms=797)

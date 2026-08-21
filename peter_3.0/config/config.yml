@@ -13,7 +13,7 @@ app:
   user_name: Dhusnic
   assistant_name: Peter
   data_dir: ./data
-  log_level: ERROR         # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  log_level: DEBUG         # DEBUG | INFO | WARNING | ERROR | CRITICAL
   log_format: rich          # rich | json  (json for shipping logs somewhere)
 
 agent:
@@ -99,6 +99,10 @@ agent:
     max_attempts: 5             # total tries, including the first
     base_delay_seconds: 10      # delay before retry 1; roughly doubles each time
     max_delay_seconds: 60       # delay never grows past this
+    request_timeout_seconds: 60 # per-attempt HTTP timeout; without this a slow
+                                 # response just hangs forever instead of
+                                 # failing into a retry (google-genai especially
+                                 # — it has no built-in default of its own)
 
   # Every vendor bills in USD; the spoken/CLI usage summary is shown in INR.
   # No live FX feed — this is a manually maintained rate, update it here
@@ -304,6 +308,16 @@ policy:
     # Connects immediately, no on-device confirmation screen — unlike every
     # other phone tool, which either only reads or is trivially reversible.
     make_phone_call: confirm
+    # Destructive, disruptive, or an unrestricted escape hatch — same bar as
+    # the phone/desktop entries above.
+    uninstall_phone_app: confirm
+    delete_phone_file: confirm
+    reboot_phone: confirm
+    # Can sever the phone's own ADB connection (especially wireless) the
+    # instant it takes effect — Peter cannot then undo it from here.
+    set_phone_airplane_mode: confirm
+    # Runs any adb shell command verbatim, no quoting or validation.
+    run_phone_shell_command: confirm
 
 integrations:
   # Controlling software already installed on this machine: your own browser,
@@ -366,20 +380,23 @@ integrations:
 
   google:
     enabled: true
-    # Calendar, Tasks, Contacts-readonly and Drive-readonly are all
-    # "sensitive", not "restricted" — none need the security audit Gmail
-    # would. Set the consent screen to "In Production" to escape the 7-day
-    # token expiry. See README.
+    # Calendar, Tasks and Contacts-readonly are "sensitive", not
+    # "restricted" — none need the security audit Gmail would. Drive,
+    # Sheets and Docs are also "sensitive". Set the consent screen to
+    # "In Production" to escape the 7-day token expiry. See README.
     #
-    # Added contacts.readonly/drive.readonly after Calendar+Tasks were
-    # already authorised? Re-run --google-auth once — the stored token does
-    # not automatically pick up a newly added scope, and Contacts/Drive calls
-    # will 403 (with a clear message pointing back here) until you do.
+    # Added a scope after Calendar+Tasks were already authorised? Re-run
+    # --google-auth once — the stored token does not automatically pick up
+    # a newly added scope, and calls needing it will 403 (with a clear
+    # message pointing back here) until you do. Scopes live on the shared
+    # token, not per API, so one re-auth run covers everything at once.
     scopes:
       - https://www.googleapis.com/auth/calendar
       - https://www.googleapis.com/auth/tasks
       - https://www.googleapis.com/auth/contacts.readonly
-      - https://www.googleapis.com/auth/drive.readonly
+      - https://www.googleapis.com/auth/drive
+      - https://www.googleapis.com/auth/spreadsheets
+      - https://www.googleapis.com/auth/documents
     calendar_id: primary
     tasklist_id: "@default"
     oauth_port: 0             # 0 = pick any free port
@@ -396,6 +413,14 @@ integrations:
   # GOOGLE_KEEP_MASTER_TOKEN in .env.
   keep:
     enabled: false
+
+  # Google Maps Platform — geocoding, directions, places. NOT the OAuth flow
+  # above: a plain API key, and the one integration here needing a Cloud
+  # Billing account attached to the project even for light personal use —
+  # see docs/USER_MANUAL.md §7.11 before relying on it. Needs
+  # GOOGLE_MAPS_API_KEY in .env.
+  maps:
+    enabled: true
 
   browser:
     enabled: true
@@ -632,6 +657,15 @@ integrations:
       - "/sdcard/Recordings"
       - "/sdcard/Music/Recordings"
       - "/sdcard/Recordings/Call"
+    # Raw `adb shell` access (run_phone_shell_command) — runs any shell
+    # command on the phone verbatim, no quoting or validation. On by
+    # explicit choice; tier=write + the standing_rules confirm entry above
+    # are the actual gates on every call, this is a second, explicit
+    # opt-in on top of both.
+    raw_shell_enabled: true
+    # Default remote directory push_file_to_phone writes to when the
+    # caller doesn't name one.
+    push_default_dir: "/sdcard/Download"
 
   # --------------------------------------------------------------- expenses
   # A personal spend ledger built by parsing bank/UPI SMS. Heuristic, not

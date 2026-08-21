@@ -176,14 +176,14 @@ def test_a_network_failure_is_recoverable():
 
 # ------------------------------------------------------------------- tools
 def test_find_google_contact_tool_reports_no_match(monkeypatch, container):
-    from peter.tools.contacts_tools import find_google_contact
+    from peter.skills.contacts.tools import find_google_contact
 
     monkeypatch.setattr(container, "contacts", lambda: _client([{"connections": []}]))
     assert "No saved contact" in find_google_contact(name="nobody")
 
 
 def test_find_google_contact_tool_lists_multiple_matches(monkeypatch, container):
-    from peter.tools.contacts_tools import find_google_contact
+    from peter.skills.contacts.tools import find_google_contact
 
     pages = [{"connections": [
         {"resourceName": "p1", "names": [{"displayName": "Ancy Mom"}]},
@@ -196,7 +196,7 @@ def test_find_google_contact_tool_lists_multiple_matches(monkeypatch, container)
 
 
 def test_find_google_contact_tool_returns_one_match_directly(monkeypatch, container):
-    from peter.tools.contacts_tools import find_google_contact
+    from peter.skills.contacts.tools import find_google_contact
 
     pages = [{"connections": [
         {"resourceName": "p1", "names": [{"displayName": "Ancy"}],
@@ -207,6 +207,6 @@ def test_find_google_contact_tool_returns_one_match_directly(monkeypatch, contai
 
 
 def test_find_google_contact_tool_rejects_empty_name():
-    from peter.tools.contacts_tools import find_google_contact
+    from peter.skills.contacts.tools import find_google_contact
 
     assert "Give a name" in find_google_contact(name="   ")

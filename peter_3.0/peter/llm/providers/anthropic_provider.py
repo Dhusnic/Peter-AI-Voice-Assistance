@@ -68,6 +68,7 @@ class AnthropicProvider(LLMProvider):
         effort: str = "low",
         cache_ttl: str = "1h",
         enable_web: bool = True,
+        timeout: float = 60.0,
         client: Any = None,
     ):
         super().__init__(model, system, max_tokens)
@@ -75,7 +76,9 @@ class AnthropicProvider(LLMProvider):
         self.cache_ttl = cache_ttl
         self.enable_web = enable_web
         self.messages: list[dict] = []
-        self._client = client or anthropic.Anthropic(api_key=api_key or None)
+        self._client = client or anthropic.Anthropic(
+            api_key=api_key or None, timeout=timeout
+        )
 
     # ------------------------------------------------------------- history
     def reset(self) -> None:

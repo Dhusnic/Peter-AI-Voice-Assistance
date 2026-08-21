@@ -129,7 +129,7 @@ def test_get_news_tool_reports_headlines(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import news_tools  # noqa: F401
+    from peter.skills.news import tools as news_tools  # noqa: F401
 
     monkeypatch.setattr(news, "headlines", lambda cfg, topic_override=None: "1. Big story")
 
@@ -140,7 +140,7 @@ def test_get_news_tool_passes_through_a_topic(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import news_tools  # noqa: F401
+    from peter.skills.news import tools as news_tools  # noqa: F401
 
     seen = {}
     monkeypatch.setattr(
@@ -157,7 +157,7 @@ def test_get_news_tool_reports_an_error_speakably(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import news_tools  # noqa: F401
+    from peter.skills.news import tools as news_tools  # noqa: F401
 
     def boom(cfg, topic_override=None):
         raise IntegrationError("news feed unreachable: x", service="news", recoverable=True)

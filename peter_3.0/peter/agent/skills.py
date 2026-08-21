@@ -4,8 +4,12 @@
 into something Claude can call; this adds a second, purely descriptive layer
 grouping those functions into named capability packages — "weather", "phone",
 "system" — each with a version, a short description, and a small set of
-advisory permission tags. Every tools module declares one manifest, right
-after its imports:
+advisory permission tags.
+
+Each package lives at `peter/skills/<name>/`, holding two files:
+`tools.py` (the `@peter_tool` functions plus the manifest below, right after
+its imports) and `SKILL.md` (setup steps, gotchas, future-extension notes —
+for the next reader, never parsed by anything at runtime):
 
     from peter.agent.skills import SkillManifest, register_skill
 
@@ -32,7 +36,7 @@ as everything else.
 
 This module is deliberately Stage 1 of a larger plan (see the architecture
 notes): a manifest format that lives inside this codebase, not an installable
-package format. There is no loader for skills outside `peter/tools/`, no
+package format. There is no loader for skills outside `peter/skills/`, no
 registry to fetch one from, and no sandbox to run an untrusted one in — all
 three are real infrastructure this does not attempt to fake.
 """

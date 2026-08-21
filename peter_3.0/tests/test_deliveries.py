@@ -162,7 +162,7 @@ def test_scan_delivery_sms_tool_reports_the_count(container, monkeypatch):
     import peter.deliveries as deliveries_module
 
     registry.reset_for_tests()
-    from peter.tools import delivery_tools  # noqa: F401
+    from peter.skills.deliveries import tools as delivery_tools  # noqa: F401
 
     monkeypatch.setattr(deliveries_module, "scan", lambda cfg, store, hours: 2)
 
@@ -177,7 +177,7 @@ def test_scan_delivery_sms_tool_reports_a_phone_error_speakably(container, monke
     from peter.core.errors import IntegrationError
 
     registry.reset_for_tests()
-    from peter.tools import delivery_tools  # noqa: F401
+    from peter.skills.deliveries import tools as delivery_tools  # noqa: F401
 
     def boom(cfg, store, hours):
         raise IntegrationError("no device", service="phone",
@@ -195,7 +195,7 @@ def test_pending_deliveries_tool_delegates_to_the_report_function(container, mon
     import peter.deliveries as deliveries_module
 
     registry.reset_for_tests()
-    from peter.tools import delivery_tools  # noqa: F401
+    from peter.skills.deliveries import tools as delivery_tools  # noqa: F401
 
     monkeypatch.setattr(deliveries_module, "pending_deliveries", lambda: "a report")
 

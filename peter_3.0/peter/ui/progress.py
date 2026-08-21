@@ -269,6 +269,15 @@ class ProgressReporter:
             f"[bold yellow]{text}...[/]", spinner="peterTool", spinner_style="yellow"
         )
 
+    def switching_model(self, from_model: str, to_model: str) -> None:
+        """A provider silently substituted a same-tier model mid-turn
+        (currently Gemini only). Without this the spinner just sits on
+        "thinking..." for however long that takes, which reads as frozen."""
+        self._status.update(
+            f"[bold yellow]⚠️  {from_model} unavailable — trying {to_model}...[/]",
+            spinner="clock", spinner_style="yellow",
+        )
+
     def retrying(self, provider: str, attempt: int, attempts: int, delay: float) -> None:
         self._status.update(
             f"[bold red]⚠️  {provider} isn't responding — retrying in {delay:.0f}s "

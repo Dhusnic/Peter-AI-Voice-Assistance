@@ -91,6 +91,7 @@ def build_provider(
             effort=agent.effort,
             cache_ttl=agent.cache_ttl,
             enable_web=agent.enable_web_tools,
+            timeout=agent.retry.request_timeout_seconds,
         )
 
     if name == "openai":
@@ -102,6 +103,7 @@ def build_provider(
             api_key=key,
             max_tokens=agent.max_tokens,
             effort=agent.effort,
+            timeout=agent.retry.request_timeout_seconds,
         )
 
     from peter.llm.providers.gemini_provider import GeminiProvider
@@ -118,4 +120,5 @@ def build_provider(
         cache_ttl_seconds=agent.cache.ttl_seconds,
         cache_min_tokens=agent.cache.min_tokens,
         fallbacks=agent.gemini_fallbacks,
+        timeout=agent.retry.request_timeout_seconds,
     )

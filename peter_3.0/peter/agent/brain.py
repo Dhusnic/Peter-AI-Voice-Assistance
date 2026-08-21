@@ -66,6 +66,7 @@ class Brain:
         self.provider = provider or factory.build_provider(
             self.config, self._system, provider_name
         )
+        self.provider.on_fallback = self._on_fallback
         # Cumulative across provider switches — the point of tracking cost is
         # comparing vendors, which needs the total to survive a switch.
         self.usage = Usage()
@@ -78,6 +79,7 @@ class Brain:
         # requires them to be set.
         self.progress_hook: Callable[[str, ToolCall | None], None] | None = None
         self.retry_hook: Callable[[str, int, int, float], None] | None = None
+        self.fallback_hook: Callable[[str, str], None] | None = None
         # Set once the daily cap has been mentioned, so a `warn` budget says
         # something the first time it is passed and not on every turn after.
         self._budget_warned = False
@@ -120,6 +122,7 @@ class Brain:
         self.provider.close()
 
         self.provider = factory.build_provider(self.config, self._system, name)
+        self.provider.on_fallback = self._on_fallback
         log.info("switched provider: %s -> %s/%s",
                  previous, self.provider.name, self.provider.model)
         return f"Switched from {previous} to {self.provider.name}/{self.provider.model}."
@@ -318,6 +321,16 @@ class Brain:
             f"{self.provider.name} isn't responding (attempt {attempt} of "
             f"{attempts}). Retrying in {delay:.0f} seconds..."
         )
+
+    def _on_fallback(self, from_model: str, to_model: str) -> None:
+        """Surface a silent same-tier model substitution (Gemini only — see
+        GeminiProvider.complete) to the UI. Print-only, not spoken: this can
+        fire several times inside one turn, and narrating each one aloud
+        would be noise, unlike the outer retry in _on_retry which is rare
+        enough to be worth saying."""
+        log.info("provider fallback surfaced to UI: %s -> %s", from_model, to_model)
+        if self.fallback_hook:
+            self.fallback_hook(from_model, to_model)
 
     def _execute(self, call: ToolCall) -> str:
         """Run one tool through the registry, so the permission gate applies.

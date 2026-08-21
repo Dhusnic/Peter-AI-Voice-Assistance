@@ -214,7 +214,7 @@ def test_scan_bank_sms_tool_reports_the_count(container, monkeypatch):
     import peter.expenses as expenses_module
 
     registry.reset_for_tests()
-    from peter.tools import expense_tools  # noqa: F401
+    from peter.skills.expenses import tools as expense_tools  # noqa: F401
 
     monkeypatch.setattr(expenses_module, "scan", lambda cfg, store, hours: 3)
 
@@ -229,7 +229,7 @@ def test_scan_bank_sms_tool_reports_a_phone_error_speakably(container, monkeypat
     from peter.core.errors import IntegrationError
 
     registry.reset_for_tests()
-    from peter.tools import expense_tools  # noqa: F401
+    from peter.skills.expenses import tools as expense_tools  # noqa: F401
 
     def boom(cfg, store, hours):
         raise IntegrationError("no device", service="phone",
@@ -247,7 +247,7 @@ def test_expense_report_tool_delegates_to_the_report_function(container, monkeyp
     import peter.expenses as expenses_module
 
     registry.reset_for_tests()
-    from peter.tools import expense_tools  # noqa: F401
+    from peter.skills.expenses import tools as expense_tools  # noqa: F401
 
     monkeypatch.setattr(expenses_module, "expense_report", lambda days: "a report")
 

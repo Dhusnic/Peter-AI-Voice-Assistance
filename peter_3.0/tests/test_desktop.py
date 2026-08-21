@@ -304,7 +304,7 @@ def test_the_search_url_is_escaped():
 # =================================================================== tools
 @pytest.fixture
 def desktop_tools(container, monkeypatch):
-    from peter.tools import desktop_tools as tools
+    from peter.skills.desktop import tools as tools
 
     opened = []
     monkeypatch.setattr(

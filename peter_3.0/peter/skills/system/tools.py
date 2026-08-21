@@ -13,9 +13,11 @@ shell, and it is gated as one.
 from __future__ import annotations
 
 import ctypes
+import fnmatch
 import os
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -154,6 +156,27 @@ def read_file(path: str) -> str:
     return text or "(the file is empty)"
 
 
+# Directory *names* skipped at any depth, case-insensitively — dev tool
+# caches, virtualenvs and VCS internals nobody means by "find my file", and
+# which on a real machine can dwarf everything else in the tree combined.
+# A whole-home search (`search_files("~", "*note*", ...)`) previously took
+# 13+ seconds walking these before it ever reached anything a person
+# actually asked for.
+_SKIP_DIR_NAMES = frozenset({
+    ".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv", "venv",
+    "env", "site-packages", ".cache", ".mypy_cache", ".pytest_cache", ".tox",
+    ".nuget", "$recycle.bin", "system volume information",
+})
+
+# Wall-clock cap on one search, regardless of max_results. Pruning the
+# directories above is not enough on its own — a real home directory can
+# still hold several unrelated Python installs, browser profiles and years of
+# accumulated temp files outside any of those names, easily 5+ minutes of
+# stat() calls on Windows. Skipping dirs turns a runaway search into a merely
+# slow one; this turns "slow" into "bounded".
+_SEARCH_TIME_BUDGET_SECONDS = 8.0
+
+
 @peter_tool(tier="read")
 def search_files(directory: str, pattern: str, max_results: int = 50) -> str:
     """Search a directory tree for files whose name matches a glob pattern.
@@ -168,17 +191,46 @@ def search_files(directory: str, pattern: str, max_results: int = 50) -> str:
         return f"{root} is not a directory."
 
     hits: list[str] = []
-    try:
-        for found in root.rglob(pattern):
-            hits.append(str(found))
-            if len(hits) >= max_results:
-                break
-    except OSError as exc:
-        return f"Search failed: {exc}"
+    timed_out = False
+    deadline = time.monotonic() + _SEARCH_TIME_BUDGET_SECONDS
+    # os.walk (not rglob): rglob is a single generator that propagates the
+    # first OSError (a broken junction, a >260-char path) straight out of
+    # the loop, discarding every hit found before it. os.walk's `onerror`
+    # skips just the one unreadable directory and keeps going. Pruning
+    # `dirnames` in place also skips descending into it at all, not merely
+    # ignoring its contents once already inside.
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda exc: None):
+        dirnames[:] = [d for d in dirnames if d.lower() not in _SKIP_DIR_NAMES]
+        for name in filenames:
+            if fnmatch.fnmatch(name.lower(), pattern.lower()):
+                hits.append(str(Path(dirpath) / name))
+                if len(hits) >= max_results:
+                    break
+        if len(hits) >= max_results:
+            break
+        # Checked once per directory, after finishing its own files, rather
+        # than mid-directory — so a directory already being read is always
+        # seen through before stopping, and the budget still bites before
+        # descending into whatever unexplored subtree comes next.
+        if time.monotonic() > deadline:
+            timed_out = True
+            break
 
     if not hits:
+        if timed_out:
+            return (
+                f"Search stopped after {_SEARCH_TIME_BUDGET_SECONDS:.0f}s without "
+                f"finding a match under {root}. Try a narrower directory."
+            )
         return f"Nothing under {root} matches {pattern!r}."
-    return "\n".join(hits)
+
+    result = "\n".join(hits)
+    if timed_out:
+        result += (
+            f"\n\n(stopped after {_SEARCH_TIME_BUDGET_SECONDS:.0f}s — there may be "
+            "more; try a narrower directory for a complete search.)"
+        )
+    return result
 
 
 @peter_tool(tier="write")

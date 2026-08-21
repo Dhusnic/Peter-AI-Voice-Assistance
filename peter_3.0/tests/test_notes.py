@@ -93,7 +93,7 @@ def test_add_note_tool_stores_and_confirms(container):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import notes_tools  # noqa: F401
+    from peter.skills.notes import tools as notes_tools  # noqa: F401
 
     result = registry.get_record("add_note").raw_fn(text="pick up dry cleaning")
 
@@ -105,7 +105,7 @@ def test_add_note_tool_refuses_empty_text(container):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import notes_tools  # noqa: F401
+    from peter.skills.notes import tools as notes_tools  # noqa: F401
 
     result = registry.get_record("add_note").raw_fn(text="   ")
 
@@ -116,7 +116,7 @@ def test_search_notes_tool_finds_a_stored_note(container):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import notes_tools  # noqa: F401
+    from peter.skills.notes import tools as notes_tools  # noqa: F401
 
     registry.get_record("add_note").raw_fn(text="parking code is 4471")
     result = registry.get_record("search_notes").raw_fn(query="parking")
@@ -128,7 +128,7 @@ def test_delete_note_tool_removes_by_id(container):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import notes_tools  # noqa: F401
+    from peter.skills.notes import tools as notes_tools  # noqa: F401
 
     add_result = registry.get_record("add_note").raw_fn(text="throwaway note")
     note_id = int(add_result.split("#")[1].rstrip(")."))
@@ -143,7 +143,7 @@ def test_delete_note_tool_reports_unknown_id(container):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import notes_tools  # noqa: F401
+    from peter.skills.notes import tools as notes_tools  # noqa: F401
 
     result = registry.get_record("delete_note").raw_fn(note_id=99999)
 

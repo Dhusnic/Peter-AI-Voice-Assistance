@@ -217,7 +217,7 @@ def test_the_screen_tool_returns_the_models_answer(container, monkeypatch, tmp_p
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import vision_tools  # noqa: F401
+    from peter.skills.vision import tools as vision_tools  # noqa: F401
 
     monkeypatch.setattr(vision, "capture_screen", lambda config, region="": tmp_path / "x.jpg")
     monkeypatch.setattr(
@@ -232,7 +232,7 @@ def test_the_screen_tool_reports_a_failure_speakably(container, monkeypatch):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import vision_tools  # noqa: F401
+    from peter.skills.vision import tools as vision_tools  # noqa: F401
 
     def boom(*a, **k):
         raise RuntimeError("no display")
@@ -249,7 +249,7 @@ def test_the_image_tool_reports_a_missing_file(container):
     from peter.agent import registry
 
     registry.reset_for_tests()
-    from peter.tools import vision_tools  # noqa: F401
+    from peter.skills.vision import tools as vision_tools  # noqa: F401
 
     result = registry.get_record("look_at_image").raw_fn(
         path="nowhere/at/all.png", question="?"

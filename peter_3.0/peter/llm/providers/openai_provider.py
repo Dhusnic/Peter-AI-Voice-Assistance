@@ -57,6 +57,7 @@ class OpenAIProvider(LLMProvider):
         api_key: str,
         max_tokens: int = 8000,
         effort: str = "low",
+        timeout: float = 60.0,
         client: Any = None,
     ):
         super().__init__(model, system, max_tokens)
@@ -68,7 +69,7 @@ class OpenAIProvider(LLMProvider):
         else:
             import openai
 
-            self._client = openai.OpenAI(api_key=api_key or None)
+            self._client = openai.OpenAI(api_key=api_key or None, timeout=timeout)
 
     # ------------------------------------------------------------- history
     def reset(self) -> None:

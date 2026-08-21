@@ -227,7 +227,7 @@ flowchart LR
 | **Calendar** | "What's on my calendar tomorrow" | Talks to Google Calendar/Tasks via a narrow OAuth client (sensitive, not restricted, scope — see §2.7). |
 | **Browser** | "Check the price of this laptop on Flipkart" | No official API exists for that site (see README for the full API survey), so Peter drives a real, logged-in Playwright browser instead. It reads the page's own structured product data first (JSON-LD/OpenGraph — what Google Shopping reads), falling back to a screenshot only if that's absent. |
 | **Multi-LLM** | "Switch to Gemini" | The whole conversation's tool-calling loop is vendor-neutral, so switching providers mid-session works without rewriting history — see §2.2.2. When Gemini is set to `auto` (this deployment's default), each turn's own text picks a cheap or a strong model with no extra API call — see §2.2.4. |
-| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 146 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
+| **Safety** | "Delete this file" → Peter asks first, "open Notepad" → just runs | Every one of the 185 registered tools carries a permission tier at registration, but `write` now **defaults to running immediately** — only the handful of genuinely destructive/irreversible tools (delete, send, run a shell command, lock the workstation) are pulled back to confirm via `policy.standing_rules`. `spend`-class actions are not merely "asked about" — the code path to auto-execute them does not exist. See §2.4. |
 | **Proactive** | (nothing — that's the point) | "Team meeting in 10 minutes, with Priya and Arjun" fires on its own from a calendar poll. "3 of your 23 unread look like they need a reply" fires from a mail poll. Both are read-only nudges, never actions taken on your behalf — see §2.10. |
 | **Phone** | (from Telegram) "what's on my calendar tomorrow" | The same brain, tools, memory and permission gate, reached over the Telegram Bot API — and every proactive nudge mirrored the other way, so a reminder finds you when you are not at the machine. An unknown chat gets *no reply at all*: replying would confirm the bot exists. Anything needing confirmation is declined remotely rather than left hanging on a console prompt nobody is at — see §2.11. |
 | **Vision** | "What's this error?" (pointing at the screen) | The screen is captured, downscaled, and actually read by a vision model. `take_screenshot` saved a PNG and stopped; this closes the loop. One isolated call, never left in conversation history — a megapixel image re-sent every turn would be the most expensive mistake available — see §2.14. |
@@ -280,7 +280,7 @@ flowchart TD
         Classify[tier: read / write / spend] --> Decide[allow / confirm / handoff / deny] --> Audit[audit.jsonl]
     end
 
-    subgraph Registry["4 · Tool Registry  (peter/tools/)"]
+    subgraph Registry["4 · Tool Registry  (peter/skills/)"]
         direction LR
         T1[system] & T2[time] & T3[memory] & T4[mail] & T5[calendar] & T6[browser] & T7[llm]
     end
@@ -637,6 +637,23 @@ flowchart TD
   speaks "Gemini isn't responding (attempt 2 of 5). Retrying in 20
   seconds..." through `services().say()` — so a real outage is narrated,
   not silent, in whichever mode you're in.
+- **A request that never returns never retries — this was a real bug, found
+  live in `--voice` mode.** `call_with_retry()` only retries on a *raised*
+  exception; none of the three vendor SDK clients (`anthropic.Anthropic`,
+  `openai.OpenAI`, `genai.Client`) were ever given a request timeout, so a
+  slow response just blocked the underlying socket read forever — no
+  exception, no retry, no spoken "isn't responding," Peter simply froze
+  after logging the prompt cache creation and nothing else. Worst on Gemini
+  specifically: `google-genai` passes an unset timeout straight through to
+  httpx, which reads `None` as "disable the timeout" rather than "use a
+  default" (Anthropic/OpenAI at least default to a finite one on their own).
+  Fixed by `RetryConfig.request_timeout_seconds` (default 60s, `agent.retry.
+  request_timeout_seconds` in `config.yml`), threaded through
+  `factory.build_provider()` into all three constructors — a timeout now
+  surfaces as `httpx.TimeoutException`/equivalent, which `_translate()`
+  already classified as recoverable before this fix existed, so it flows
+  straight into the existing retry/backoff and spoken-retry path with no
+  other code changed.
 - **Cost displays in ₹, not $.** Every vendor bills in USD; `Usage.summary()`
   converts using `agent.usd_to_inr_rate` (a manually maintained rate, no
   live FX feed) only at display time — the underlying `cost_usd` totals stay
@@ -645,7 +662,7 @@ flowchart TD
 
 ---
 
-### 2.3 Tool Registry — `peter/agent/registry.py` + `peter/tools/`
+### 2.3 Tool Registry — `peter/agent/registry.py` + `peter/skills/`
 
 **Job:** turn a plain Python function into something an LLM can discover,
 understand, and call — for all three vendors, from one definition.
@@ -671,37 +688,43 @@ flowchart LR
 - **Tool order is part of the cached prefix.** `tool_specs()` returns tools
   in a stable, sorted order deliberately — a registry that reordered itself
   between runs would invalidate the prompt cache for no reason.
-- **146 tools currently registered**, split by permission tier:
+- **185 tools currently registered**, split by permission tier:
 
 | Module | Read | Write | What it covers |
 |---|---:|---:|---|
-| `system.py` | 6 | 9 | apps, files, clipboard, volume, screenshot, stats, lock, PowerShell |
-| `mail_tools.py` | 6 | 5 | read/search/send/star/archive/delete + inbox_digest + waiting_on |
-| `time_tools.py` | 3 | 6 | alarms, timers, reminders, to-dos |
-| `calendar_tools.py` | 4 | 4 | events + Google Tasks |
-| `browser_tools.py` | 6 | 4 | read/click/type/login, plus multi-site comparison |
-| `desktop_tools.py` | 2 | 6 | apps, bookmarks, YouTube, media keys, local folders |
-| `memory_tools.py` | 2 | 4 | facts + preferences |
-| `focus_tools.py` | 1 | 2 | timed mute-and-restore focus sessions |
-| `briefing_tools.py` | 2 | 0 | morning briefing status |
-| `llm_tools.py` | 2 | 1 | switch / inspect provider, spend report |
-| `vision_tools.py` | 3 | 0 | look at the screen, an image, or the browser page |
-| `watch_tools.py` | 2 | 2 | standing price and stock watches |
-| `workspace_tools.py` | 1 | 3 | save / restore a set of open applications |
-| `docs_tools.py` | 3 | 2 | index folders, search them, answer from them |
-| `recorder_tools.py` | 4 | 3 | record, transcribe, summarise, read back |
-| `dev_tools.py` | 7 | 0 | git, PRs, CI, work log, standup |
-| `telegram_tools.py` | 1 | 1 | send to your phone, bridge status |
-| `phone_tools.py` | 5 | 12 | SMS, one-time code, call log, phone screen, phone status / open a link, save a screenshot, transcribe a voice note, call a contact/make/answer/end a call, Spotify play/pause/skip, set/dismiss a phone alarm |
-| `expense_tools.py` | 1 | 1 | scan bank/UPI SMS, report spending |
-| `delivery_tools.py` | 1 | 1 | scan courier SMS, list pending shipments |
-| `weather_tools.py` | 1 | 0 | current weather (Open-Meteo, no key needed) |
-| `routine_tools.py` | 1 | 1 | run / list config-defined tool chains |
-| `news_tools.py` | 1 | 0 | top headlines (Google News RSS, no key needed) |
-| `notes_tools.py` | 2 | 2 | add/search/list/delete quick journal notes |
-| `perf_tools.py` | 1 | 0 | per-tool timing report (busiest tools, native-rewrite candidates) |
-| `skill_tools.py` | 1 | 0 | list every skill and its usable/not-configured status |
-| **Total** | **69** | **69** | |
+| `system/tools.py` | 6 | 9 | apps, files, clipboard, volume, screenshot, stats, lock, PowerShell |
+| `mail/tools.py` | 6 | 5 | read/search/send/star/archive/delete + inbox_digest + waiting_on |
+| `time/tools.py` | 3 | 6 | alarms, timers, reminders, to-dos |
+| `calendar/tools.py` | 4 | 4 | events + Google Tasks |
+| `contacts/tools.py` | 1 | 0 | look up a Google Contacts entry by name |
+| `drive/tools.py` | 3 | 6 | list/search/read, create files/folders, move, rename, share, trash (Drive) |
+| `sheets/tools.py` | 2 | 3 | create, list tabs, read/write/append a range (Sheets) |
+| `gdocs/tools.py` | 1 | 2 | create, read, append text (Google Docs) |
+| `keep/tools.py` | 2 | 4 | list/search, create, pin, archive, delete (Keep — off by default) |
+| `maps/tools.py` | 5 | 0 | geocode, reverse geocode, directions, place search/details (off by default) |
+| `browser/tools.py` | 6 | 4 | read/click/type/login, plus multi-site comparison |
+| `desktop/tools.py` | 2 | 6 | apps, bookmarks, YouTube, media keys, local folders |
+| `memory/tools.py` | 2 | 4 | facts + preferences |
+| `focus/tools.py` | 1 | 2 | timed mute-and-restore focus sessions |
+| `briefing/tools.py` | 2 | 0 | morning briefing status |
+| `llm/tools.py` | 2 | 1 | switch / inspect provider, spend report |
+| `vision/tools.py` | 3 | 0 | look at the screen, an image, or the browser page |
+| `price_watch/tools.py` | 2 | 2 | standing price and stock watches |
+| `workspace/tools.py` | 1 | 3 | save / restore a set of open applications |
+| `docs/tools.py` | 3 | 3 | index folders (local + Drive), search them, answer from them |
+| `recorder/tools.py` | 4 | 3 | record, transcribe, summarise, read back |
+| `dev/tools.py` | 7 | 0 | git, PRs, CI, work log, standup |
+| `telegram/tools.py` | 1 | 1 | send to your phone, bridge status |
+| `phone/tools.py` | 10 | 24 | SMS, one-time code, call log, phone screen, phone status / open a link, save a screenshot, transcribe a voice note, call a contact/make/answer/end a call, Spotify play/pause/skip, set/dismiss a phone alarm, list/launch/uninstall apps, push/list/delete files, list/add contacts, wifi/bluetooth/airplane mode/volume/brightness/reboot, read notifications, last known location, raw shell command |
+| `expenses/tools.py` | 1 | 1 | scan bank/UPI SMS, report spending |
+| `deliveries/tools.py` | 1 | 1 | scan courier SMS, list pending shipments |
+| `weather/tools.py` | 1 | 0 | current weather (Open-Meteo, no key needed) |
+| `routines/tools.py` | 1 | 1 | run / list config-defined tool chains |
+| `news/tools.py` | 1 | 0 | top headlines (Google News RSS, no key needed) |
+| `notes/tools.py` | 2 | 2 | add/search/list/delete quick journal notes |
+| `performance/tools.py` | 1 | 0 | per-tool timing report (busiest tools, native-rewrite candidates) |
+| `skills/tools.py` | 1 | 0 | list every skill and its usable/not-configured status |
+| **Total** | **88** | **97** | |
 
   Seven of the write-tier tools are pulled back to *confirm* by standing rules
   in `config.yml` — `delete_file`, `delete_email`, `delete_calendar_event`,
@@ -1121,25 +1144,68 @@ flowchart LR
   walks every provider/integration and reports its real state — this is the
   single command that answers "is everything wired up correctly."
 
-#### Contacts and Drive — same OAuth client, two more scopes
+#### Contacts, Drive, Sheets, Docs — same OAuth client, more scopes
 
-`peter/integrations/google/contacts.py` (People API, read-only) and Drive
-support inside `peter/docs_index.py` reuse the exact OAuth client Calendar/
-Tasks already build (`peter/integrations/google/auth.py`) — no new auth
-module, just two more scopes on `GoogleConfig.scopes`
-(`contacts.readonly`, `drive.readonly`).
+`peter/integrations/google/contacts.py` (People API, read-only), `drive.py`
+(Drive API v3, full read/write), `sheets.py` (Sheets API v4), and
+`gdocs.py` (Docs API v1) all reuse the exact OAuth client Calendar/Tasks
+already build (`peter/integrations/google/auth.py`) — no new auth module,
+just more scopes on `GoogleConfig.scopes`: `contacts.readonly`, `drive`
+(the full scope, not `drive.readonly` — see below), `spreadsheets`,
+`documents`. `googleapiclient.discovery.build()`'s generic
+discovery-document mechanism already covered Drive the same way it covers
+Calendar; Sheets and Docs turned out to need nothing new either, just
+`build_service(config, "sheets", "v4")` / `build_service(config, "docs",
+"v1")` in place of `"drive"`/`"v3"`.
 
 **A scope added after a token already exists doesn't retroactively cover
 it.** A user who authorised before these scopes existed keeps working for
-Calendar/Tasks but gets a 403 on the first Contacts/Drive call — already
-handled by the exact `_call()` pattern `calendar.py`/`tasks.py` established
-(403/401 → `AuthError` naming `--google-auth`), so this needed a docs
-callout, not new code.
+Calendar/Tasks/Contacts but gets a 403 on the first Drive-write/Sheets/Docs
+call — already handled by the exact `_call()` pattern
+`calendar.py`/`tasks.py`/`contacts.py` established (403/401 → `AuthError`
+naming `--google-auth`), so this needed a docs callout, not new code. Because
+scopes live on the *shared token*, not per API, that one re-auth run covers
+every Google tool at once, old and new.
+
+**Drive deletion is always a trash, never a permanent delete.**
+`DriveClient.trash_file()` calls `files().update(body={"trashed": True})`,
+the same reversibility choice `keep.py`'s `.trash()` already made — a voice
+command that misheard a file name should be recoverable from the Drive
+trash, not gone. `share_file()` validates its `role` argument
+(`reader`/`commenter`/`writer`) before the API call, since Drive itself
+would otherwise accept an invalid role silently in some client libraries.
+
+**`gdocs.py` reads through Drive's export endpoint, not the Docs API's own
+structural JSON.** `read_doc()` calls the same
+`files().export(mimeType="text/plain")` path `index_drive_folder()` (below)
+already uses for Google Docs — far simpler than walking the Docs API's
+paragraph/run tree for something as basic as "give me the text." Writing
+(`create_doc`, `append_text`) does go through the Docs API's own
+`documents().create()`/`batchUpdate()`, since Drive's API has no path for
+inserting text into a doc's body.
+
+**Named `gdocs`, not `docs`, throughout** — module, `GDocsClient` class,
+`services().gdocs()` accessor, `gdocs/tools.py` — because `services().docs()`
+already means something else entirely: the local RAG `DocIndex` store
+(§2.5). Reusing `docs` would have silently shadowed that accessor.
+
+**Sheets range writes take a `values_csv` grammar** (`;` separates rows, `,`
+separates cells) instead of a raw nested-list argument — a JSON
+array-of-arrays is awkward for both tool-call generation and a spoken
+interface where the user is dictating values, not writing JSON.
 
 **Contacts is deliberately not wired into `send_email`.** `find_google_contact`
 resolves a name to a real address; `send_email` still requires the address
 itself. Same split `call_contact`/`make_phone_call` already established in
-`peter/tools/phone_tools.py` — resolving a name is a different trust
+`peter/skills/phone/tools.py` — resolving a name is a different trust
+boundary than a write action trusting whatever string it's handed, and
+that boundary is worth keeping consistent across every place a name gets
+resolved to a contact detail, not just the phone.
+
+**Contacts is deliberately not wired into `send_email`.** `find_google_contact`
+resolves a name to a real address; `send_email` still requires the address
+itself. Same split `call_contact`/`make_phone_call` already established in
+`peter/skills/phone/tools.py` — resolving a name is a different trust
 boundary than a write action trusting whatever string it's handed, and
 that boundary is worth keeping consistent across every place a name gets
 resolved to a contact detail, not just the phone.
@@ -1556,16 +1622,19 @@ cited answer. Keeping them separate is what keeps the cheap one cheap.
 
 ---
 
-### 2.15 The phone — `peter/integrations/phone/adb.py`, `peter/tools/phone_tools.py`
+### 2.15 The phone — `peter/integrations/phone/adb.py`, `peter/skills/phone/tools.py`
 
 Windows has no API into your handset's messages; Phone Link is closed. The two
 routes that work are a companion app you write, or ADB, which most developer
 machines already have.
 
-Fifteen tools, five `read` and ten `write`, grown in two passes: read-only
-first (SMS, the call log, the screen), then real device control once a phone
-was actually connected and staying read-only stopped being the obvious
-default. Reading is unrestricted: SMS (`read_sms`, `latest_code`), the call
+Thirty-four tools, ten `read` and twenty-four `write`, grown in three passes:
+read-only first (SMS, the call log, the screen), then real device control
+once a phone was actually connected and staying read-only stopped being the
+obvious default, then a large "full access" expansion (app management, file
+transfer, contacts write, device settings, notifications, location, and a
+raw shell escape hatch — see below) once the second pass had proven the
+pattern held up. Reading is unrestricted: SMS (`read_sms`, `latest_code`), the call
 log (`read_call_log`), and the screen itself (`read_phone_screen`, a
 screenshot piped straight into the same vision pipeline §2.4 already built
 for the desktop screen, good for reading a QR code or checking what an app is
@@ -1674,7 +1743,7 @@ when nothing handles it `am start` fails the ordinary way rather than
 Peter pretending it worked. A phone-side "reminder" is implemented as a
 labelled alarm, since Android has no separate public reminder intent.
 
-Only `make_phone_call` is pulled back to `confirm` by a standing rule (see the
+`make_phone_call` is pulled back to `confirm` by a standing rule (see the
 tool-count table above) — it connects immediately with no on-device
 confirmation screen of its own, and dials a number the model transcribed from
 speech, which can be misheard. `call_contact` deliberately does *not* inherit
@@ -1685,6 +1754,13 @@ risk than a raw number — the whole failure mode `confirm` exists to catch
 unambiguously. Answering and hanging up stay plain `write` for the same
 "confirm would defeat the point" reason as before (an unanswered call goes to
 voicemail while you're confirming), or because they're trivially reversible.
+
+The full-access expansion (below) added five more standing rules on the same
+basis — `uninstall_phone_app`, `delete_phone_file`, and `reboot_phone` because
+they destroy data or are highly disruptive; `set_phone_airplane_mode` because
+it can sever the phone's own ADB connection with no way for Peter to undo
+that from its side; `run_phone_shell_command` because it is an intentionally
+unrestricted escape hatch, the phone-side equivalent of `run_powershell`.
 
 **Every one of these embeds free text into a single command string handed to
 the phone's own shell — which makes each of them a command-injection surface,
@@ -1730,6 +1806,120 @@ that finishes the payment is still always yours; the tool only ever opens a
 plain `http(s)` URL, rejecting `intent://`/`market://`-style schemes that
 `am start -d` would otherwise also accept and that could launch an arbitrary
 app component instead of a web page.
+
+#### The full-access expansion — apps, files, contacts, settings, notifications, location, raw shell
+
+**Deliberately declined: UI automation.** Everything below acts through named
+Android intents, content-provider calls, or `dumpsys`/`settings` commands —
+never a tap, swipe, or typed keystroke into an arbitrary app. That is the
+same line the browser layer already draws ("Peter cannot buy anything. Not
+'will not' — cannot," §2.6): a tap-anywhere capability would let Peter
+operate a banking or UPI app exactly like a human could, which is a
+different order of risk than every named tool here, each of which does
+exactly one specific thing.
+
+**App management is package-id only, on purpose.** There is no reliable
+no-root way to resolve a package id (`com.spotify.music`) to the
+human-readable name a launcher shows — that needs `aapt dump badging`
+against the APK, a desktop SDK tool with no equivalent on the phone itself.
+`list_phone_apps` exists so a caller has a concrete id to pass to
+`launch_phone_app`/`uninstall_phone_app` rather than guessing one from a
+spoken name. `launch_phone_app` uses a monkey launch
+(`monkey -p <pkg> -c LAUNCHER`), the same fallback `launch_spotify` already
+used for its own no-query case, since the exact launcher activity needed for
+`am start -n pkg/.Activity` isn't knowable without inspecting the APK.
+`uninstall_phone_app` uses `pm uninstall --user 0`, which also removes
+pre-installed apps a plain `pm uninstall` refuses to touch (the APK itself
+stays on the read-only system partition; true removal needs root).
+
+**File transfer stays within public shared storage.** `push_file_to_phone`,
+`list_phone_files`, and `delete_phone_file` work against `/sdcard/...`
+paths — `adbd` runs as the `shell` UID, which keeps broad access to shared
+storage despite scoped storage restricting *app-to-app* access there.
+`/data/data/<pkg>/...` (app-private storage) is not reachable this way
+without root. `delete_phone_file` is never recursive (`rm`, not `rm -r`) —
+one call, one file, a small and predictable blast radius, and it is one of
+the five tools pulled into `standing_rules: confirm`.
+
+**Contact creation reads back what it wrote, rather than trusting the
+insert.** `add_phone_contact` writes an account-less ("local") raw contact
+via the Contacts Provider's `content insert` — the most reliable no-root
+path, but genuinely fragile: some OEM sync adapters (observed on Samsung and
+Xiaomi builds) reject or silently mangle an account-less raw contact. The
+sequence is: create the raw contact, query back its row id (the `content`
+CLI never reports one directly — a race-prone "newest matching row"
+heuristic, acceptable for a personal single-user phone), insert the name and
+phone data rows bound to that id, then re-query by name to confirm the
+number actually landed before declaring success. If a step after the first
+fails, it best-effort deletes the half-written raw contact and says plainly
+whether that cleanup worked — a contact tool that silently leaves broken,
+duplicate, or half-filled entries behind would be worse than one that fails
+loudly.
+
+**Device settings, one gotcha per action, each found by checking rather than
+assuming API stability holds across Android versions:** WiFi uses
+`cmd -w wifi set-wifi-enabled`, not the older `svc wifi`, deprecated and
+unreliable since Android 10. Bluetooth (`set_phone_bluetooth`) has no
+reliable silent no-root toggle on Android 12+ — the command is still issued,
+but the result is read back and reported honestly rather than assumed, since
+newer phones commonly need it done on-device instead. Airplane mode needs
+two calls (the setting, then a broadcast that makes the system act on it —
+the setting alone does nothing), and carries a real operational risk: if the
+phone is on wireless ADB, turning it on can sever that connection the
+instant it applies, at which point the broadcast's own failure is
+indistinguishable from any other dropped connection. That specific
+shape — enabling, over a configured wireless address, the broadcast call
+failing disconnected — is treated as a likely soft-success rather than a
+hard error, and it is one of the five tools pulled into
+`standing_rules: confirm` precisely because Peter cannot undo the effect
+from its own side if the connection is what died. Volume
+(`cmd media_session volume`) and brightness (`settings put system
+screen_brightness`, after first forcing manual mode — skip that and
+adaptive brightness silently overrides the next call) round out the group
+with no comparable gotcha.
+
+**Notifications and location are both explicitly best-effort, not a
+documented stable API.** `read_phone_notifications` parses
+`dumpsys notification --noredact` (the flag is required, or content comes
+back as placeholder text) and `phone_location` parses
+`dumpsys location`'s "Last Known Locations:" section — both are diagnostic
+text dumps whose exact field formatting can drift across Android versions
+and OEM skins. A record that doesn't parse is skipped rather than failing
+the whole read, matching the posture `messages`/`calls` already take on a
+malformed row. Location specifically is a **cache, not a live fix** — it can
+be stale by hours or empty entirely (e.g. right after a reboot), and there
+is no non-root way to force a fresh GPS reading through plain `adb shell`;
+`phone_location`'s spoken response says so plainly rather than presenting a
+possibly-hours-old coordinate as current.
+
+**`run_phone_shell_command` is the one tool that deliberately does not go
+through `_run()`'s failure heuristic.** `_run` treats a nonzero exit code or
+the literal word "error:" in output as a command failure — correct for
+adb's own known-shape commands, wrong for an arbitrary one (a `grep` with no
+match legitimately returns nonzero; a command can legitimately print
+"error" in output that isn't a failure at all). `run_shell` instead returns
+whatever happened, exit code included, and raises only for genuine
+infrastructure failures — adb missing, a timeout, the process failing to
+start. It applies **no** `_quote()` to the command, unlike every other
+function in this file: transparency and flexibility are the entire point of
+an explicitly unrestricted escape hatch, the phone-side counterpart to
+`run_powershell`. Gated three ways, not one: `write` tier, a
+`standing_rules: confirm` entry, and `integrations.phone.raw_shell_enabled`
+(defaults `false`, the same "off until you explicitly opt in beyond the
+integration's own on/off switch" shape `KeepConfig`/`MapsConfig` already
+use for their own riskiest capability) — belt-and-braces for a tool whose
+entire design is "no restrictions."
+
+**The retry-and-reconnect logic moved into one shared helper.**
+`_run`, `screenshot_bytes`, `_list_remote`, and now every new function that
+talks to the device directly go through `_retry_if_disconnected()` — the
+same run-once, reconnect-if-it-looks-disconnected, retry-once shape that
+used to be copy-pasted at each call site (three times, before this
+expansion added several more). Worth doing once the function count grew
+enough that a fourth and fifth copy would have made the duplication
+impossible to ignore; incidentally, it also fixed a real gap along the
+way — `pull_latest_file` had no reconnect retry at all before this, unlike
+its siblings.
 
 ---
 
@@ -1922,18 +2112,18 @@ FTS5 pair, built on the same `Db` helper `expenses.py`/`deliveries.py` use
 tokenise-and-OR-query approach `memory/store.py`'s `search_facts` already
 uses to keep free-form speech safe against FTS5's query syntax. Four tools:
 `add_note`, `search_notes`, `recent_notes`, `delete_note` — deliberately not
-folded into `memory_tools.py`, since `remember_fact` and `add_note` answer
+folded into `memory/tools.py`, since `remember_fact` and `add_note` answer
 different questions ("what should Peter always know" vs. "what did I say
 that one time") and merging them would blur a distinction worth keeping
 sharp for the model choosing between them.
 
 ---
 
-### 2.20 Performance profiling — `peter/perf.py`, `peter/tools/perf_tools.py`
+### 2.20 Performance profiling — `peter/perf.py`, `peter/skills/performance/tools.py`
 
 Direct follow-up to the language-architecture discussion: rather than guess
 whether any tool is CPU-bound enough to be worth a Rust/PyO3 rewrite, measure
-it. Every one of the 146 registered tools gets timed with zero changes to any
+it. Every one of the 185 registered tools gets timed with zero changes to any
 of them, by adding one more measurement at the exact point `policy/gate.py`
 was already timing calls for the audit log.
 
@@ -1989,7 +2179,7 @@ guess either way.
 
 ---
 
-### 2.21 Skills — `peter/agent/skills.py`, `peter/tools/skill_tools.py`
+### 2.21 Skills — `peter/agent/skills.py`, `peter/skills/*/tools.py`
 
 Stage 1 of a longer-term plan to grow Peter the way OpenClaw's ecosystem
 grew — capabilities as installable, self-describing packages rather than
@@ -1999,18 +2189,34 @@ that need real infrastructure this project does not have yet, or that would
 be a genuine security regression to fake. See the plan notes for the full
 staging; this section covers only what actually shipped.
 
+**Every skill is a directory, not a loose file.** `peter/skills/<name>/`
+holds exactly two things: `tools.py` (the `@peter_tool` functions and the
+`SkillManifest` that describes them) and `SKILL.md` (human-facing setup
+steps, gotchas, and future-extension notes — never read by Peter at
+runtime). This is a filesystem-level reorg on top of the original Stage 1
+manifest work, done once the tool count reached 32 modules across enough
+genuinely different domains (five separate Google products alone) that
+"which file has the phone tools" stopped being obvious from a flat
+`peter/tools/` listing. It changes nothing about *how* a skill is loaded —
+still a plain `import`, still wired through `TOOL_MODULES` in `registry.py`
+— only where its two description surfaces (one machine-read, one
+human-read) physically live.
+
 **A manifest is a small, typed, co-located object — not a second file
-format.** Every one of the 26 tool modules under `peter/tools/` declares one
-`SkillManifest` (name, version, description, a `module` field set to its own
-`__name__`, a small advisory `permissions` tuple, and the exact tool names it
-owns), registered at import time via `register_skill()` right next to the
-`@peter_tool` functions it describes. The alternative — external
-`skill.yaml` files in a separate directory tree — was considered and
-rejected for this stage specifically: it is Stage-2/3-shaped infrastructure
-(a parser, a loader, a path convention) for skills that, today, still ship
-in the same commit as everything else. A Python object gets the same
-self-description with none of that, and fails at import time on a typo
-instead of at first use.
+format.** Every one of the 32 skill packages under `peter/skills/` declares
+one `SkillManifest` (name, version, description, a `module` field set to its
+own `__name__`, a small advisory `permissions` tuple, and the exact tool
+names it owns) inside `tools.py`, registered at import time via
+`register_skill()` right next to the `@peter_tool` functions it describes.
+External `skill.yaml` files as the *manifest itself* were considered and
+rejected again at this reorg, for the same reason as Stage 1: it is
+Stage-2/3-shaped infrastructure (a parser, a loader, a schema) for skills
+that still ship in the same commit as everything else. A Python object gets
+the same self-description with none of that, and fails at import time on a
+typo instead of at first use. `SKILL.md` is not a counter-example to this —
+it is deliberately *not* parsed by anything; it exists for the next person
+(human or Claude, in a future session) reading the codebase, not for the
+runtime.
 
 **`permissions` enforces nothing — it never touches execution.** The
 existing policy gate (§2.4) already sits above every tool call regardless of
@@ -2049,7 +2255,7 @@ disabled — because it genuinely conflicts with the caching design, not just
 out of caution.** The tool list is part of the cached prompt prefix on every
 vendor (`registry.py`'s own docstring, and
 `test_tools_are_sorted_so_the_cache_prefix_is_stable`), and a per-turn
-filter by definition makes that list vary with `user_text`. At 146 tools,
+filter by definition makes that list vary with `user_text`. At 185 tools,
 the tokens saved by a smaller per-turn list can plausibly be smaller than
 what a lost cache hit costs — a cache *write* bills more than a cache
 *read* on every provider here. `agent.tool_filter.enabled` therefore
@@ -2071,7 +2277,12 @@ serve yet. Skill sandboxing is a project of its own, and pointless before
 anything untrusted is actually being installed. Versioning/rollback
 commands are decorative until a skill can update independently of the rest
 of this repository. All four wait for Stage 2, when there is an actual
-external skill to justify building any of them.
+external skill to justify building any of them. `SKILL.md` does not bring
+any of these closer on its own — it has no parser and nothing depends on
+its structure — but keeping one real, current doc per skill means that if
+Stage 2 ever needs a machine-readable install descriptor, there is accurate
+prose already on hand to draw one from, instead of thirty-two modules to
+re-read cold.
 
 ---
 
@@ -2101,7 +2312,12 @@ peter_3.0/
 │   ├── policy/
 │   │   ├── gate.py               # §2.4 allow / confirm / handoff / deny
 │   │   └── audit.py              # append-only JSONL trail
-│   ├── tools/                   # §2.3 the 146 registered tools
+│   ├── skills/                  # §2.3, §2.21 the 185 registered tools, one
+│   │   │                        #   plugin package per capability
+│   │   ├── weather/
+│   │   │   ├── tools.py          # @peter_tool functions + SkillManifest
+│   │   │   └── SKILL.md          # setup, gotchas, future-extension notes
+│   │   └── .../                  # same shape for every other skill
 │   ├── memory/store.py          # §2.5 SQLite + FTS5
 │   ├── scheduler/jobs.py        # §2.8 APScheduler + SQLite jobstore
 │   ├── meeting_prep.py          # §2.10 calendar + memory nudge

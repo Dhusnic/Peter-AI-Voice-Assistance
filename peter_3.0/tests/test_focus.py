@@ -11,7 +11,7 @@ import pytest
 
 from peter import focus
 from peter.scheduler.jobs import Scheduler
-from peter.tools import focus_tools
+from peter.skills.focus import tools as focus_tools
 
 
 @pytest.fixture(autouse=True)

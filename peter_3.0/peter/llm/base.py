@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 # What a turn ended with, normalised across vendors.
 STOP_END = "end"          # finished speaking
@@ -126,6 +126,11 @@ class LLMProvider(ABC):
         self.system = system
         self.max_tokens = max_tokens
         self.usage = Usage()
+        # Fired when a provider silently substitutes a same-tier model mid-turn
+        # (currently Gemini only — see GeminiProvider.complete). None everywhere
+        # else, and a no-op if never set: this is a UI hint, not a control flow
+        # dependency, so a provider that never calls it changes nothing.
+        self.on_fallback: Callable[[str, str], None] | None = None
 
     @abstractmethod
     def reset(self) -> None:

@@ -711,6 +711,6 @@ def test_index_drive_folder_requires_a_folder_id(index, config):
 
 # -------------------------------------------------------------------- tool
 def test_index_drive_folder_tool_rejects_empty_id():
-    from peter.tools.docs_tools import index_drive_folder
+    from peter.skills.docs.tools import index_drive_folder
 
     assert "Give a Drive folder id" in index_drive_folder(folder_id="")

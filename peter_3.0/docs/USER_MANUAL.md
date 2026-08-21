@@ -144,7 +144,7 @@ with a message naming the field, rather than three hours later inside a tool.
 <a name="4-what-peter-can-do"></a>
 ## 4. What Peter can do
 
-146 tools across 28 areas. You never name a tool — you say what you want and
+185 tools across 32 areas. You never name a tool — you say what you want and
 Peter picks. The examples below are things you can say verbatim.
 
 <a name="41-your-machine"></a>
@@ -320,6 +320,34 @@ Sending email always asks for confirmation first. That one cannot be unsent.
 > "what's on my briefing schedule?"
 
 Deleting a calendar event asks first.
+
+**Contacts, Drive, Sheets, and Docs** ride the same Google sign-in as
+Calendar and Tasks — one `--google-auth` covers all of it.
+
+> "find Ancy's phone number" *(Contacts — resolves a name so send_email/
+> make_phone_call get the exact address, doesn't send or call itself)*
+> "list what's in my Drive folder called Taxes"
+> "read the file called Q3 notes"
+> "create a Drive file called shopping list with milk, eggs, bread"
+> "move that file to my Archive folder" / "share it with ancy@example.com"
+> "make a new spreadsheet called Trip Budget"
+> "write Alice, 10 and Bob, 8 into Sheet1 starting at A1"
+> "add a row to that sheet: Charlie, 6"
+> "create a Google Doc called Meeting Notes with today's action items"
+> "read me that document" / "add a line to the end of it"
+
+Deleting a Drive file moves it to the Drive trash, never a permanent
+delete — recoverable the same way deleting it by hand in Drive's own UI
+would be.
+
+**Google Maps** is off by default — unlike everything else on this page it
+needs its own paid-capable API key, not just the OAuth sign-in above. See
+[7.11](#711-google-maps--cloud-console--billing) before using it.
+
+> "get directions from home to the airport"
+> "find a coffee shop near MG Road"
+> "what's the phone number for that place?"
+> "what's the address of the Eiffel Tower?"
 
 <a name="47-the-web-and-shopping"></a>
 ### 4.7 The web and shopping
@@ -570,11 +598,61 @@ type it is exactly as far as automation should reach into that. Peter reads
 the code **digit by digit** ("1 2 3 4 5 6"), because a speech engine given
 "123456" says "one hundred and twenty-three thousand…".
 
-**Still no send-SMS tool.** Everything above adds real actions, but sending a
-text as you stays out of scope: it needs default-SMS-app privileges or
-version-specific `service call isms` incantations, and remains a bad idea for
-something driven by speech recognition. Calling is different — it's one
-well-documented public Android intent with no equivalent minefield.
+**Still no send-SMS tool, and no tap/swipe/type automation of any kind.**
+Everything on this page adds real actions, but sending a text as you stays
+out of scope, and so does driving the phone's screen by touch — that would
+let Peter operate any app, including one that can move money, which is the
+same line the browser layer already refuses to cross (Peter can prepare a
+checkout but never complete the payment). Everything below acts through
+named Android intents and system commands, never a simulated tap.
+
+**Full-access expansion — apps, files, contacts, device settings,
+notifications, location, and a raw shell.**
+
+> "what apps do I have installed?"
+> "open com.spotify.music" / "uninstall com.example.game"
+> "copy this file to my phone" / "what's in my Downloads folder on the phone?"
+> "delete that old file from my phone"
+> "add Priya, 9876543210 to my contacts"
+> "turn on wifi" / "turn off bluetooth" / "turn on airplane mode"
+> "set the phone volume to 50%" / "turn the brightness down to 20%"
+> "restart my phone"
+> "what notifications do I have?"
+> "where's my phone right now?"
+
+- **Apps** work by package id (e.g. `com.spotify.music`), not a spoken app
+  name — there's no reliable way to look up a human-readable app name
+  without root, so ask *"what apps do I have?"* first if you don't already
+  know the id. Uninstalling asks for confirmation first.
+- **Files** stay within the phone's shared storage (Downloads, Pictures,
+  etc.) — that's the same area a USB file transfer or a file-manager app can
+  reach without root. Deleting a file asks for confirmation first.
+- **Adding a contact** writes directly to the phone and reads back what was
+  saved before confirming success — on some phones (notably Samsung and
+  Xiaomi), contact-syncing software can reject or partially save a contact
+  created this way; if that happens, Peter says so rather than claiming it
+  worked.
+- **WiFi, volume, and brightness** are reliable across recent Android
+  versions. **Bluetooth is not** on Android 12 and newer — the command is
+  still sent, but some phones need the toggle done on the phone itself, and
+  Peter reports honestly if it didn't confirm the change. **Airplane mode**
+  asks for confirmation first: if the phone is connected wirelessly, turning
+  it on will very likely disconnect Peter from the phone, and there is no
+  way to undo that from the computer side. **Restarting the phone** also
+  asks first — it interrupts anything running and drops the connection
+  until the phone finishes booting back up.
+- **Notifications and location** are both best-effort. Notification reading
+  pulls from a diagnostic system report whose exact format can shift between
+  Android versions, so an occasional notification may not parse. Location is
+  a **cached** last-known position, not a live GPS fix — it can be minutes
+  or hours old, or empty right after a reboot; there's no way to force a
+  fresh reading without rooting the phone.
+- **The raw shell command** (*"run this on my phone: ..."*) is an
+  unrestricted escape hatch — it runs exactly what you say on the phone with
+  no safety checks of its own, for anything none of the tools above cover.
+  It always asks for confirmation, and it is off by default (a second,
+  explicit opt-in beyond `integrations.phone.enabled` — see
+  [§7.5](#75-phone-sms-over-adb)).
 
 <a name="416-cost-and-models"></a>
 ### 4.16 Cost and models
@@ -799,16 +877,20 @@ Every tool call passes through a gate before it runs. Tools carry a tier:
 playing a video, creating a calendar event, saving a memory — are cheap and
 reversible, and a `y/N` prompt on every one is just friction.
 
-**These seven always ask**, and are listed explicitly in `config.yml`:
+**These twelve always ask**, and are listed explicitly in `config.yml`:
 
 ```
 delete_file · delete_email · delete_calendar_event
 run_powershell · lock_workstation · send_email · make_phone_call
+uninstall_phone_app · delete_phone_file · reboot_phone
+set_phone_airplane_mode · run_phone_shell_command
 ```
 
 Destroy data, run arbitrary commands, send something to another person that
-cannot be unsent, or — `make_phone_call` — connect a real call with no
-on-device confirmation screen of its own. `call_contact` (calling a saved
+cannot be unsent, connect a real call or sever the phone's own connection
+with no on-device confirmation screen of its own, or — `run_phone_shell_command`
+— run literally anything on the phone with no restrictions at all.
+`call_contact` (calling a saved
 contact by name) is deliberately **not** on this list, even though it also
 dials immediately: it only ever calls a number matched unambiguously against
 your own saved contacts, which doesn't carry the "misheard number" risk this
@@ -865,17 +947,18 @@ token that **expires every 7 days**. An app password does not expire.
    ```
 
 <a name="73-calendar-and-tasks"></a>
-### 7.3 Calendar, tasks, contacts and Drive — 10 minutes
+### 7.3 Calendar, tasks, contacts, Drive, Sheets and Docs — 10 minutes
 
-One OAuth client covers all four — Calendar, Tasks, read-only Contacts, and
-read-only Drive.
+One OAuth client covers all six — Calendar, Tasks, read-only Contacts, full
+read/write Drive, Sheets, and Docs.
 
 1. **console.cloud.google.com** → APIs & Services → Credentials →
    Create credentials → OAuth client ID → **Desktop app**.
 2. Enable the **Google Calendar API**, **Google Tasks API**, **People API**,
-   and **Google Drive API** for the project.
+   **Google Drive API**, **Google Sheets API**, and **Google Docs API** for
+   the project.
 3. Set the OAuth consent screen to **In Production**. In "Testing" status Google
-   expires your refresh token after 7 days. All four scopes are only
+   expires your refresh token after 7 days. All six scopes are only
    *sensitive*, not *restricted*, so this needs no security audit — you will see
    an "unverified app" warning once, which you can click through.
 4. Put the client id and secret in `.env`.
@@ -884,15 +967,19 @@ read-only Drive.
    .venv\Scripts\python.exe -m peter.main --google-auth
    ```
 
-**Already set this up before Contacts/Drive existed?** Your stored token
-still covers Calendar/Tasks fine, but a Contacts or Drive call will fail
-with "Google rejected the request (403)" until you re-run step 5 above —
-the token needs a fresh consent to pick up the two new scopes. Enable the
-People API and Drive API in the console first if you haven't.
+**Already set this up before Drive/Sheets/Docs (or Contacts) existed?** Your
+stored token still covers whichever of these already worked, but any new
+one will fail with "Google rejected the request (403)" until you re-run
+step 5 above — scopes live on the shared token, not per API, so one re-auth
+run picks up everything at once. Enable the missing APIs in the console
+first if you haven't (Drive is very likely already on if Drive search
+worked before; Sheets and Docs are new).
 
 Once authorised: *"find Ancy's number"* resolves a saved contact to a real
 phone/email so `send_email`/`make_phone_call` can use it — see
-[§7.6](#76-documents) for pointing Peter at a Drive folder to search.
+[§7.6](#76-documents) for pointing Peter at a Drive folder to search, and
+[§4.6](#46-calendar-and-tasks) for what Drive/Sheets/Docs can now do
+beyond indexing.
 
 <a name="74-dev-tools"></a>
 ### 7.4 Dev tools — 1 minute
@@ -946,6 +1033,24 @@ install on the phone. Two things worth knowing:
       adb_path: "./mobile dev/platform-tools/adb.exe"
   ```
 
+**The full-access tools (apps, files, contacts, settings, notifications,
+location) need nothing beyond the switch above either.** Two extras worth
+knowing about:
+
+- `push_file_to_phone` writes to `integrations.phone.push_default_dir`
+  (`/sdcard/Download` by default) when you don't name a folder.
+- The raw shell command (`run_phone_shell_command`) needs a **second,
+  explicit** opt-in on top of `integrations.phone.enabled` — it runs
+  anything you say on the phone verbatim, with no safety checks:
+  ```yaml
+  integrations:
+    phone:
+      raw_shell_enabled: true   # off by default — read this before turning it on
+  ```
+  Even with this on, every call still asks for confirmation first
+  (`policy.standing_rules`) — this flag exists so the capability can't be
+  reached at all until you've deliberately turned it on twice.
+
 **Going wireless — no cable needed after this one-time setup:**
 
 1. On the phone: Settings → Developer options → **Wireless debugging** → on.
@@ -996,14 +1101,20 @@ integrations:
 Or index on demand: *"index D:/notes"*.
 
 **Google Drive** shares the same search — `search_docs`/`ask_docs` don't
-care whether a passage came from a local file or Drive. Needs the
-`drive.readonly` scope from [§7.3](#73-calendar-and-tasks) (on by default;
-re-authorise if you set this up before Drive support existed). Find a
-folder's id in its URL — the part after `/folders/` — and either set
-`drive_folder_id` in config.yml or say *"index Drive folder \<id\>"*. Not
-recursive: only files directly inside that one folder. Google Docs/Sheets/
-Slides are exported to text automatically; everything else needs a matching
-extension in `integrations.docs.extensions`, same allowlist local files use.
+care whether a passage came from a local file or Drive. Needs the `drive`
+scope from [§7.3](#73-calendar-and-tasks) (on by default; re-authorise if
+you set this up before Drive support existed). Find a folder's id in its
+URL — the part after `/folders/` — and either set `drive_folder_id` in
+config.yml or say *"index Drive folder \<id\>"*. Not recursive: only files
+directly inside that one folder. Google Docs/Sheets/Slides are exported to
+text automatically; everything else needs a matching extension in
+`integrations.docs.extensions`, same allowlist local files use.
+
+This indexing is separate from the general Drive file tools in
+[§4.6](#46-calendar-and-tasks) (list/search/read/create/move/share/trash) —
+indexing is for *"what does that file say"* across everything in a folder
+at once; the Drive tools are for *"do something to this one file"*. Both
+use the same Drive access, just for different jobs.
 
 <a name="77-the-browser"></a>
 ### 7.7 The browser — once per site
@@ -1110,6 +1221,50 @@ silently going quiet, and the fix is generating a fresh token and updating
 **To turn it off again**, set `integrations.keep.enabled: false`, or just
 remove the two `.env` values — either one is enough.
 
+<a name="711-google-maps--cloud-console--billing"></a>
+### 7.11 Google Maps — Cloud Console + billing
+
+**Read this before turning it on.** Every other Google integration in this
+manual — Calendar, Tasks, Contacts, Drive, Sheets, Docs — rides the OAuth
+sign-in from [§7.3](#73-calendar-and-tasks): a scoped grant you can inspect
+and revoke any time. Maps is different in a way that has nothing to do with
+trust and everything to do with money: **Google Maps Platform has no
+billing-free tier at all.** Every project that calls it needs a Cloud
+Billing account attached, even though ordinary personal use (a handful of
+directions/geocode/place lookups a day) stays comfortably inside the
+monthly free credit. `integrations.maps.enabled` defaults to `false` for
+exactly this reason — nothing should attempt to set this up on your behalf.
+
+If you're fine attaching billing:
+
+1. **console.cloud.google.com** → select the same project used for the
+   OAuth client above (or create a new one).
+2. **Billing** → link a billing account. Required even though you likely
+   never get charged for normal use.
+3. **APIs & Services → Library** → enable: **Geocoding API**, **Directions
+   API**, **Places API**.
+4. **APIs & Services → Credentials** → Create credentials → **API key**.
+5. Click the new key → **Restrict key** → API restrictions → limit it to
+   exactly the 3 APIs enabled above. An unrestricted key is a plain bearer
+   secret — anyone holding it can run up charges on APIs you never intended
+   to expose.
+6. Put it in `.env`:
+   ```
+   GOOGLE_MAPS_API_KEY=<the restricted key from step 5>
+   ```
+7. Set `integrations.maps.enabled: true` in `config/config.yml`.
+8. Check with `--health`, or just try *"get directions from home to the
+   airport"*.
+
+**If a call fails with "REQUEST_DENIED"** — the three most common causes,
+in order: billing isn't attached to the project, one of the three APIs
+isn't enabled, or the key is restricted to the wrong APIs. **"OVER_QUERY_
+LIMIT"** means check quota/billing in Cloud Console; Peter reports both as
+spoken errors rather than failing silently.
+
+**To turn it off again**, set `integrations.maps.enabled: false`, or just
+remove `GOOGLE_MAPS_API_KEY` from `.env` — either one is enough.
+
 ---
 
 <a name="8-command-line-reference"></a>
@@ -1142,7 +1297,7 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 <a name="9-complete-tool-reference"></a>
 ## 9. Complete tool reference
 
-146 tools. `[r]` read, `[w]` write, `[!]` always confirms.
+185 tools. `[r]` read, `[w]` write, `[!]` always confirms.
 
 **System** — `open_app` [w] · `list_files` [r] · `read_file` [r] ·
 `search_files` [r] · `write_file` [w] · `delete_file` [!] · `move_file` [w] ·
@@ -1170,6 +1325,17 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 `add_google_task` [w] · `list_google_tasks` [r] · `complete_google_task` [w]
 
 **Google Contacts** — `find_google_contact` [r]
+
+**Google Drive** — `list_drive_files` [r] · `search_drive_files` [r] ·
+`read_drive_file` [r] · `create_drive_file` [w] · `create_drive_folder` [w] ·
+`move_drive_file` [w] · `rename_drive_file` [w] · `share_drive_file` [w] ·
+`trash_drive_file` [w]
+
+**Google Sheets** — `create_google_sheet` [w] · `list_sheet_tabs` [r] ·
+`read_sheet_range` [r] · `write_sheet_range` [w] · `append_sheet_rows` [w]
+
+**Google Docs** — `create_google_doc` [w] · `read_google_doc` [r] ·
+`append_to_google_doc` [w]
 
 **Google Keep** *(off by default — [§7.10](#710-google-keep))* —
 `list_keep_notes` [r] · `search_keep_notes` [r] · `create_keep_note` [w] ·
@@ -1209,7 +1375,12 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 `call_contact` [w] · `answer_phone_call` [w] · `hang_up_phone_call` [w] · `play_music_on_phone` [w] ·
 `pause_music_on_phone` [w] · `skip_track_on_phone` [w] · `set_phone_alarm` [w] ·
 `stop_phone_alarm` [w] · `open_link_on_phone` [w] · `save_phone_screenshot` [w] ·
-`transcribe_phone_voice_note` [w]
+`transcribe_phone_voice_note` [w] · `list_phone_apps` [r] · `launch_phone_app` [w] ·
+`uninstall_phone_app` [!] · `push_file_to_phone` [w] · `list_phone_files` [r] ·
+`delete_phone_file` [!] · `list_phone_contacts` [r] · `add_phone_contact` [w] ·
+`set_phone_wifi` [w] · `set_phone_bluetooth` [w] · `set_phone_airplane_mode` [!] ·
+`set_phone_volume` [w] · `set_phone_brightness` [w] · `reboot_phone` [!] ·
+`read_phone_notifications` [r] · `phone_location` [r] · `run_phone_shell_command` [!]
 
 **Expenses** — `scan_bank_sms` [w] · `expense_report` [r]
 
@@ -1220,6 +1391,10 @@ subsystem, distinguishing **disabled** (you turned it off), **not configured**
 **Routines** — `run_routine` [w] · `list_routines` [r]
 
 **News** — `get_news` [r]
+
+**Google Maps** *(off by default — [§7.11](#711-google-maps--cloud-console--billing))* —
+`geocode_address` [r] · `reverse_geocode` [r] · `get_directions` [r] ·
+`find_nearby_places` [r] · `get_place_details` [r]
 
 **Notes** — `add_note` [w] · `search_notes` [r] · `recent_notes` [r] ·
 `delete_note` [w]
@@ -1257,14 +1432,41 @@ the venv first. This is the most common problem by a wide margin.
 Your OAuth consent screen is still in "Testing" status, which expires refresh
 tokens after 7 days. Set it to "In Production" — see [§7.3](#73-calendar-and-tasks).
 
-**"Google rejected the request (403)" on a contact lookup or Drive search**
-Not the 7-day expiry above — this is a token authorised before Contacts/Drive
-scopes existed. Re-run `--google-auth` once; see [§7.3](#73-calendar-and-tasks).
+**"Google rejected the request (403)" on a contact lookup, Drive, Sheets, or Docs call**
+Not the 7-day expiry above — this is a token authorised before that scope
+existed. Re-run `--google-auth` once; see [§7.3](#73-calendar-and-tasks).
+Calendar/Tasks calls that already worked are unaffected either way.
+
+**Maps calls fail with "REQUEST_DENIED"**
+In order of likelihood: no Cloud Billing account attached to the project
+(Maps Platform has no billing-free tier at all), one of Geocoding/
+Directions/Places API not enabled, or the key is restricted to the wrong
+APIs. See [§7.11](#711-google-maps--cloud-console--billing).
+
+**Maps calls fail with "OVER_QUERY_LIMIT"**
+Check quota and billing status for the project in Cloud Console — this
+usually means the free monthly credit ran out or billing lapsed, not a bug.
 
 **"Google Keep sign-in failed"**
 The master token is wrong, expired, or was revoked (often by changing your
 Google password, which invalidates it). Generate a fresh one and update
 `GOOGLE_KEEP_MASTER_TOKEN` in `.env` — see [§7.10](#710-google-keep).
+
+**Bluetooth toggle says it didn't confirm**
+Expected on Android 12 and newer — there's no reliable silent way to toggle
+Bluetooth over ADB without root on recent Android. Turn it on/off on the
+phone itself.
+
+**Turning on airplane mode disconnected the phone from Peter**
+Expected if you're on wireless ADB (`integrations.phone.wireless_address`
+set) — airplane mode cuts WiFi, which is what the wireless connection rides
+on. Reconnect over USB, or turn airplane mode back off on the phone, then
+`adb connect` will work again next time Peter needs it.
+
+**`run_phone_shell_command` says it's not configured**
+`integrations.phone.raw_shell_enabled` is `false` (the default). Read
+[§7.5](#75-phone-sms-over-adb) before setting it to `true` — this tool has
+no restrictions of its own.
 
 **The wake word is "hey jarvis", not "hey Peter"**
 openWakeWord ships four pre-trained models (`alexa`, `hey_mycroft`,
@@ -1429,10 +1631,23 @@ USB/ADB connection between this machine and the handset only — nothing about
 asked for and Peter's reply.
 
 **Weather and news are the two features that talk to a third party other than
-your LLM provider.** A city name (or coordinates) goes to Open-Meteo, and a
-topic or a general request goes to Google News' RSS feed — no account, no
-key on either, and nothing else about you goes with the request, but it's
-still a network call to a service that isn't Anthropic/OpenAI/Google.
+your LLM provider with no account of yours attached.** A city name (or
+coordinates) goes to Open-Meteo, and a topic or a general request goes to
+Google News' RSS feed — no account, no key on either, and nothing else
+about you goes with the request.
+
+**Calendar, Tasks, Contacts, Drive, Sheets, and Docs talk to Google
+directly**, under a scoped OAuth grant you can inspect and revoke any time
+from myaccount.google.com — separate from whatever LLM provider you use.
+**Google Keep is the one exception with a materially different trust
+model**: it authenticates with a master token (capability-equivalent to
+your account password, not a scoped or individually revocable grant),
+which is why it defaults off — see [§7.10](#710-google-keep) before
+enabling it. **Google Maps is the one integration that costs real money**
+(a Cloud Billing account, even for light personal use inside the free
+credit) rather than raising a privacy question — see
+[§7.11](#711-google-maps--cloud-console--billing).
+
 Bank/UPI and courier SMS parsed for expenses and deliveries, and everything
 you note down, never leave this machine at all — those are local SQLite
 tables, same as everything else in that first list. A routine never adds a
